@@ -328,8 +328,8 @@ static int stmt_setup_result(SeekdbStmtImpl *s, SeekdbResultImpl *r)
         b->buffer        = r->result_str_buffers[i];
         b->buffer_length = BUFSZ_DEFAULT;
         b->length        = &r->result_str_lens[i];
-        b->is_null       = (my_bool *)&r->result_is_null[i];
-        b->error         = (my_bool *)&r->result_error[i];
+        b->is_null       = (void *)&r->result_is_null[i];
+        b->error         = (void *)&r->result_error[i];
     }
 
     mysql_free_result(meta);
