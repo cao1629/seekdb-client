@@ -42,7 +42,9 @@ find_path(MARIADB_INCLUDE_DIR
 find_library(MARIADB_LIBRARY
              NAMES mariadb mariadbclient mysqlclient
              HINTS ${_mariadb_lib_hint}
-                   /opt/homebrew/lib /usr/local/lib /usr/lib /usr/lib64)
+                   /opt/homebrew/lib /usr/local/lib /usr/lib /usr/lib64
+                   /usr/lib64/mysql /usr/lib64/mariadb
+                   /usr/lib/mysql   /usr/lib/mariadb)
 
 if (NOT MARIADB_INCLUDE_DIR OR NOT MARIADB_LIBRARY)
     message(FATAL_ERROR
