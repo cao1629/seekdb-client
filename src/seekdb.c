@@ -56,7 +56,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
         execl(bin_path, bin_path,
               "--data-dir", db_dir,
-              "-Dtest", "-A",
               (char *)NULL);
         _exit(127);
     }
