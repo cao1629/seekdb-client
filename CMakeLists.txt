@@ -81,3 +81,24 @@ if (SEEKDB_BUILD_EXAMPLES)
     add_executable(seekdb_cis examples/create_insert_select.c)
     target_link_libraries(seekdb_cis PRIVATE seekdb_client)
 endif()
+
+# ----------------------------------------------------------------------------
+# CLI tool
+# ----------------------------------------------------------------------------
+
+add_executable(seekdb_cli tools/seekdb_cli.c)
+target_include_directories(seekdb_cli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MARIADB_INCLUDE_DIR})
+target_link_libraries(seekdb_cli PRIVATE seekdb_client)
+
+find_library(READLINE_LIBRARY readline
+    HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
+find_path(READLINE_INCLUDE_DIR readline/readline.h
+    HINTS /opt/homebrew/include /usr/local/include /usr/include)
+if (READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
+    target_include_directories(seekdb_cli PRIVATE ${READLINE_INCLUDE_DIR})
+    target_link_libraries(seekdb_cli PRIVATE ${READLINE_LIBRARY})
+else()
+    message(FATAL_ERROR "readline not found")
+endif()

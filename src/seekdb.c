@@ -518,7 +518,7 @@ int seekdb_result_next(SeekdbResult result)
     }
 }
 
-static int read_cell_str(SeekdbResultImpl *r, int64_t index,
+int read_cell_str(SeekdbResultImpl *r, int64_t index,
                          const char **out_data, size_t *out_len, int *out_is_null)
 {
     if (index < 0 || index >= r->column_count) return SEEKDB_INVALID_ARGUMENT;

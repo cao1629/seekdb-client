@@ -61,3 +61,6 @@ typedef struct {
     char            *result_error;
     enum enum_field_types *result_field_types;
 } SeekdbResultImpl;
+
+int read_cell_str(SeekdbResultImpl *r, int64_t index,
+                  const char **out_data, size_t *out_len, int *out_is_null);
