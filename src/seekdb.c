@@ -2,13 +2,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <mysql.h>
@@ -23,94 +21,23 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 /* ============================================================ handle ===== */
 
-static int probe_server(const char *sock_path)
+static int try_connect(SeekdbHandleImpl *h)
 {
     MYSQL *m = mysql_init(NULL);
     if (!m) return 0;
-    int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, sock_path,
-                                CLIENT_MULTI_STATEMENTS) != NULL;
+    int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path,
+                                0) != NULL;
     mysql_close(m);
     return ok;
 }
 
-static int wait_for_ready(const char *sock_path, int timeout_ms)
+static int wait_for_ready(SeekdbHandleImpl *h, int retries)
 {
-    int waited = 0;
-    int interval = 500000; /* 500 ms */
-    while (waited < timeout_ms * 1000) {
-        if (probe_server(sock_path)) return 0;
-        usleep(interval);
-        waited += interval;
+    for (int i = 0; i < retries; ++i) {
+        if (try_connect(h)) return 0;
+        usleep(200 * 1000);
     }
     return -1;
-}
-
-/*
- * Server manager — runs in a daemonized child process.
- *
- * Responsibilities:
- *   1. Exclusive flock on seekdb.pid — prevents multiple servers.
- *   2. Fork+exec seekdb with --nodaemon (stays as our direct child).
- *   3. Every 5s, try exclusive flock on seekdb.clients.
- *      If it succeeds, no clients remain — kill seekdb and exit.
- *   4. If seekdb dies on its own, exit.
- */
-static void server_manager(const char *bin_path, const char *db_dir,
-                           const char *clients_path)
-{
-    char pid_lock_path[256];
-    snprintf(pid_lock_path, sizeof(pid_lock_path), "%s/run/seekdb.pid", db_dir);
-
-    /* 1. Exclusive lock on seekdb.pid — only one manager at a time. */
-    int pid_fd = open(pid_lock_path, O_CREAT | O_RDWR, 0644);
-    if (pid_fd < 0 || flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
-        if (pid_fd >= 0) close(pid_fd);
-        _exit(0);
-    }
-
-    /* 2. Fork seekdb. */
-    pid_t seekdb_pid = fork();
-    if (seekdb_pid == 0) {
-        close(pid_fd);
-        execl(bin_path, bin_path,
-              "--base-dir", db_dir,
-              "--nodaemon",
-              (char *)NULL);
-        _exit(127);
-    }
-    if (seekdb_pid < 0) {
-        close(pid_fd);
-        _exit(1);
-    }
-
-    /* Write seekdb PID to the lock file for diagnostics. */
-    dprintf(pid_fd, "%d\n", (int)seekdb_pid);
-
-    /* 3. Monitor loop. */
-    int clients_fd = open(clients_path, O_CREAT | O_RDWR, 0644);
-
-    for (;;) {
-        /* Check if seekdb child is still alive. */
-        int status;
-        if (waitpid(seekdb_pid, &status, WNOHANG) == seekdb_pid)
-            break;
-
-        sleep(5);
-
-        /* Try exclusive on seekdb.clients — succeeds when no clients. */
-        if (clients_fd >= 0 && flock(clients_fd, LOCK_EX | LOCK_NB) == 0) {
-            flock(clients_fd, LOCK_UN);
-            kill(seekdb_pid, SIGTERM);
-            waitpid(seekdb_pid, NULL, 0);
-            break;
-        }
-    }
-
-    if (clients_fd >= 0) close(clients_fd);
-    unlink(pid_lock_path);
-    flock(pid_fd, LOCK_UN);
-    close(pid_fd);
-    _exit(0);
 }
 
 int seekdb_open(const char *bin_path, const char *db_dir, int port,
@@ -127,11 +54,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(h->sock_path,    sizeof(h->sock_path),    "%s/run/sql.sock",        db_dir);
     snprintf(h->clients_path, sizeof(h->clients_path), "%s/run/seekdb.clients",  db_dir);
 
-    /* Ensure run/ directory exists. */
-    char run_dir[256];
-    snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
-    mkdir(run_dir, 0755);
-
     /* Take shared lock on seekdb.clients — registers us as a client. */
     h->clients_fd = open(h->clients_path, O_CREAT | O_RDWR, 0644);
     if (h->clients_fd < 0) {
@@ -142,23 +64,26 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     flock(h->clients_fd, LOCK_SH);
 
     /* Is the server already running? */
-    if (probe_server(h->sock_path)) {
+    if (try_connect(h)) {
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
 
-    /* Start the server manager (double-fork to daemonize). */
-    pid_t pid = fork();
-    if (pid == 0) {
-        if (fork() == 0) {
-            server_manager(bin_path, db_dir, h->clients_path);
+    /* Start seekdb-daemon. */
+    {
+        char *argv[] = {(char *)bin_path, (char *)db_dir, NULL};
+        pid_t pid;
+        if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
+            flock(h->clients_fd, LOCK_UN);
+            close(h->clients_fd);
+            xfree(h->db_dir);
+            free(h);
+            return SEEKDB_INTERNAL_ERROR;
         }
-        _exit(0);
     }
-    if (pid > 0) waitpid(pid, NULL, 0);   /* reap intermediate */
 
     /* Wait for the server to become ready. */
-    if (wait_for_ready(h->sock_path, 120000) < 0) {
+    if (wait_for_ready(h, 600) < 0) {
         fprintf(stderr, "seekdb: server not ready after 120s\n");
         flock(h->clients_fd, LOCK_UN);
         close(h->clients_fd);
@@ -176,8 +101,6 @@ int seekdb_close(SeekdbHandle handle)
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = handle;
 
-    /* Release our shared lock. The server manager will notice
-       when all clients have released and shut down the server. */
     if (h->clients_fd >= 0) {
         flock(h->clients_fd, LOCK_UN);
         close(h->clients_fd);
@@ -211,7 +134,7 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
                             database,
                             0,          /* port — ignored for UDS */
                             h->sock_path,
-                            CLIENT_MULTI_STATEMENTS))
+                            0))
     {
         fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
                 h->sock_path, mysql_error(c->mysql));

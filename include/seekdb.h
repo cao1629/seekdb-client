@@ -36,9 +36,6 @@ typedef enum {
     // ...
 } SeekdbTypeId;
 
-// bin_path: full path to the seekdb binary
-// db_dir:   data directory (also used as base-dir / cwd for the server)
-// port:     TCP listen port (port <= 0: do not listen on the network address)
 int seekdb_open(const char *bin_path, const char *db_dir, int port,
                 SeekdbHandle *out_handle);
 int seekdb_close(SeekdbHandle handle);
