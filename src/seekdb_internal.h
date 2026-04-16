@@ -5,13 +5,12 @@
 #include <mysql.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 typedef struct {
-    char *db_dir;
-    int   port;
-    char *host;
-    char *default_user;
-    char *default_password;
+    char   *db_dir;
+    pid_t   pid;
+    char    sock_path[256];
 } SeekdbHandleImpl;
 
 typedef struct {
@@ -21,9 +20,9 @@ typedef struct {
 typedef struct {
     MYSQL_STMT  *stmt;
     int          param_count;
-    MYSQL_BIND  *param_binds;       // calloc'd to param_count entries
-    int64_t     *param_int64_buf;   // backing storage for bound int64s
-    int          bound;             // 1 = mysql_stmt_bind_param has been called
+    MYSQL_BIND  *param_binds;
+    int64_t     *param_int64_buf;
+    int          bound;
 } SeekdbStmtImpl;
 
 typedef struct {
@@ -37,9 +36,11 @@ typedef struct {
 } SeekdbValueImpl;
 
 typedef enum {
-    SEEKDB_RESULT_KIND_QUERY = 1,   // backed by MYSQL_RES (text protocol)
-    SEEKDB_RESULT_KIND_STMT  = 2,   // backed by MYSQL_STMT (binary protocol)
+    SEEKDB_RESULT_KIND_QUERY = 1,
+    SEEKDB_RESULT_KIND_STMT  = 2,
 } SeekdbResultKind;
+
+#define BUFSZ_DEFAULT 1024
 
 typedef struct {
     SeekdbResultKind kind;
@@ -51,11 +52,11 @@ typedef struct {
     unsigned long   *current_lengths;
 
     /* STMT-kind state */
-    MYSQL_STMT      *stmt_ref;          // not owned; owned by SeekdbStmtImpl
+    MYSQL_STMT      *stmt_ref;
     MYSQL_BIND      *result_binds;
     char           **result_str_buffers;
     unsigned long   *result_str_lens;
-    char            *result_is_null;    // 'my_bool' is just char in libmariadb
+    char            *result_is_null;
     char            *result_error;
     enum enum_field_types *result_field_types;
 } SeekdbResultImpl;

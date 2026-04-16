@@ -1,13 +1,14 @@
 #include "seekdb_internal.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include <mysql.h>
-
-#define BUFSZ_DEFAULT 1024
 
 static char *xstrdup(const char *s) { return s ? strdup(s) : NULL; }
 static void  xfree(void *p) { if (p) free(p); }
@@ -19,19 +20,55 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 /* ============================================================ handle ===== */
 
+static int wait_for_socket(const char *path, int timeout_ms)
+{
+    int waited = 0;
+    int interval = 50000; /* 50 ms */
+    while (waited < timeout_ms * 1000) {
+        if (access(path, F_OK) == 0) return 0;
+        usleep(interval);
+        waited += interval;
+    }
+    return -1;
+}
+
 int seekdb_open(const char *db_dir, int port, SeekdbHandle *out_handle)
 {
-    if (!out_handle) return SEEKDB_INVALID_ARGUMENT;
+    if (!db_dir || !out_handle) return SEEKDB_INVALID_ARGUMENT;
     *out_handle = NULL;
 
     SeekdbHandleImpl *h = calloc(1, sizeof(*h));
     if (!h) return SEEKDB_INTERNAL_ERROR;
 
-    h->db_dir           = xstrdup(db_dir);
-    h->port             = port;
-    h->host             = xstrdup("127.0.0.1");
-    h->default_user     = xstrdup("root");
-    h->default_password = xstrdup("");
+    h->db_dir = xstrdup(db_dir);
+    snprintf(h->sock_path, sizeof(h->sock_path), "%s/run/sql.sock", db_dir);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
+
+    if (pid == 0) {
+        if (chdir(db_dir) < 0) _exit(127);
+
+        execlp("seekdb", "seekdb",
+               "--data-dir", db_dir,
+               "-Dtest", "-A",
+               (char *)NULL);
+        _exit(127);
+    }
+
+    h->pid = pid;
+
+    if (wait_for_socket(h->sock_path, 30000) < 0) {
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
 
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
@@ -41,12 +78,15 @@ int seekdb_close(SeekdbHandle handle)
 {
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = handle;
+
+    if (h->pid > 0) {
+        kill(h->pid, SIGTERM);
+        int status;
+        waitpid(h->pid, &status, 0);
+    }
+
     xfree(h->db_dir);
-    xfree(h->host);
-    xfree(h->default_user);
-    xfree(h->default_password);
     free(h);
-    /* mysql_library_end() is process-wide; leave it for the application. */
     return SEEKDB_SUCCESS;
 }
 
@@ -66,28 +106,17 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
     c->mysql = mysql_init(NULL);
     if (!c->mysql) { free(c); return SEEKDB_INTERNAL_ERROR; }
 
-    unsigned int proto = MYSQL_PROTOCOL_TCP;
-    mysql_options(c->mysql, MYSQL_OPT_PROTOCOL, &proto);
-
     if (!mysql_real_connect(c->mysql,
-                            h->host,
-                            h->default_user,
-                            h->default_password,
+                            NULL,       /* host — NULL for UDS */
+                            "root",
+                            "",
                             database,
-                            (unsigned int)h->port,
-                            NULL /* unix_socket */,
+                            0,          /* port — ignored for UDS */
+                            h->sock_path,
                             CLIENT_MULTI_STATEMENTS))
     {
-        fprintf(stderr,
-                "seekdb: mysql_real_connect(host=%s port=%d user=%s db=%s) failed: "
-                "%s (errno=%u sqlstate=%s)\n",
-                h->host ? h->host : "(null)",
-                h->port,
-                h->default_user ? h->default_user : "(null)",
-                database ? database : "(null)",
-                mysql_error(c->mysql),
-                mysql_errno(c->mysql),
-                mysql_sqlstate(c->mysql));
+        fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
+                h->sock_path, mysql_error(c->mysql));
         mysql_close(c->mysql);
         free(c);
         return SEEKDB_INTERNAL_ERROR;
@@ -118,9 +147,8 @@ int seekdb_disconnect(SeekdbConnection connection)
 
 static int run_simple(SeekdbConnectionImpl *c, const char *sql, size_t len)
 {
-    if (mysql_real_query(c->mysql, sql, (unsigned long)len)) {
+    if (mysql_real_query(c->mysql, sql, (unsigned long)len))
         return SEEKDB_INTERNAL_ERROR;
-    }
     return SEEKDB_SUCCESS;
 }
 
@@ -180,10 +208,8 @@ int seekdb_query(SeekdbConnection connection, const char *sql, int64_t sql_len,
 
     MYSQL_RES *res = mysql_store_result(c->mysql);
     if (!res) {
-        /* Either an error, or a no-result statement (INSERT/UPDATE/DDL).
-         * Distinguish by checking field count. */
         if (mysql_field_count(c->mysql) == 0) {
-            /* OK with no result set — return an empty result. */
+            /* OK with no result set (INSERT/UPDATE/DDL). */
         } else {
             return SEEKDB_INTERNAL_ERROR;
         }
@@ -280,7 +306,7 @@ int seekdb_stmt_bind_int64(SeekdbStmt stmt, int64_t index, int64_t value)
     b->buffer      = &s->param_int64_buf[index];
     b->is_unsigned = 0;
 
-    s->bound = 0;  /* re-bind on next execute */
+    s->bound = 0;
     return SEEKDB_SUCCESS;
 }
 
@@ -288,7 +314,6 @@ int seekdb_stmt_bind(SeekdbStmt stmt, int64_t index, SeekdbValue value)
 {
     if (!stmt || !value) return SEEKDB_INVALID_ARGUMENT;
     SeekdbValueImpl *v = value;
-    /* Phase 1 only handles INT64 via the value path. */
     if (v->type != SEEKDB_TYPE_INT64) return SEEKDB_INVALID_ARGUMENT;
     return seekdb_stmt_bind_int64(stmt, index, v->v.i64);
 }
@@ -297,7 +322,6 @@ static int stmt_setup_result(SeekdbStmtImpl *s, SeekdbResultImpl *r)
 {
     MYSQL_RES *meta = mysql_stmt_result_metadata(s->stmt);
     if (!meta) {
-        /* No result set (INSERT/UPDATE/DDL). */
         r->column_count = 0;
         return SEEKDB_SUCCESS;
     }
@@ -417,17 +441,14 @@ int seekdb_result_column_name(SeekdbResult result, int64_t index,
         MYSQL_FIELD *f = mysql_fetch_field_direct(r->mysql_res, (unsigned int)index);
         if (!f) return SEEKDB_INTERNAL_ERROR;
         *out_name = f->name;
-        return SEEKDB_SUCCESS;
     } else {
         MYSQL_RES *meta = mysql_stmt_result_metadata(r->stmt_ref);
         if (!meta) return SEEKDB_INTERNAL_ERROR;
         MYSQL_FIELD *f = mysql_fetch_field_direct(meta, (unsigned int)index);
         if (!f) { mysql_free_result(meta); return SEEKDB_INTERNAL_ERROR; }
         *out_name = f->name;
-        /* NB: name lifetime is tied to meta; leak meta intentionally for
-         * Phase 1 simplicity — TODO: cache metadata in r at setup time. */
-        return SEEKDB_SUCCESS;
     }
+    return SEEKDB_SUCCESS;
 }
 
 int seekdb_result_column_type_id(SeekdbResult result, int64_t index,
@@ -465,14 +486,13 @@ int seekdb_result_next(SeekdbResult result)
     SeekdbResultImpl *r = result;
 
     if (r->kind == SEEKDB_RESULT_KIND_QUERY) {
-        if (!r->mysql_res) return SEEKDB_INTERNAL_ERROR; /* no rows */
+        if (!r->mysql_res) return SEEKDB_INTERNAL_ERROR;
         r->current_row     = mysql_fetch_row(r->mysql_res);
         r->current_lengths = mysql_fetch_lengths(r->mysql_res);
         return r->current_row ? SEEKDB_SUCCESS : SEEKDB_INTERNAL_ERROR;
     } else {
         int rc = mysql_stmt_fetch(r->stmt_ref);
-        if (rc == 0)            return SEEKDB_SUCCESS;
-        if (rc == MYSQL_NO_DATA) return SEEKDB_INTERNAL_ERROR; /* TODO: dedicated end-of-rows code */
+        if (rc == 0) return SEEKDB_SUCCESS;
         return SEEKDB_INTERNAL_ERROR;
     }
 }
@@ -488,13 +508,12 @@ static int read_cell_str(SeekdbResultImpl *r, int64_t index,
         *out_is_null = (cell == NULL);
         *out_data = cell;
         *out_len  = cell ? r->current_lengths[index] : 0;
-        return SEEKDB_SUCCESS;
     } else {
         *out_is_null = r->result_is_null[index];
         *out_data    = r->result_str_buffers[index];
         *out_len     = r->result_str_lens[index];
-        return SEEKDB_SUCCESS;
     }
+    return SEEKDB_SUCCESS;
 }
 
 int seekdb_result_get_int64(SeekdbResult result, int64_t index, int64_t *out_value)
@@ -584,10 +603,8 @@ int seekdb_value_free(SeekdbValue value)
 {
     if (!value) return SEEKDB_INVALID_ARGUMENT;
     SeekdbValueImpl *v = value;
-    if (v->type == SEEKDB_TYPE_VARCHAR ||
-        v->type == SEEKDB_TYPE_DECIMAL ||
-        v->type == SEEKDB_TYPE_DATE    ||
-        v->type == SEEKDB_TYPE_DATETIME||
+    if (v->type == SEEKDB_TYPE_VARCHAR || v->type == SEEKDB_TYPE_DECIMAL ||
+        v->type == SEEKDB_TYPE_DATE    || v->type == SEEKDB_TYPE_DATETIME ||
         v->type == SEEKDB_TYPE_TIMESTAMP) {
         xfree(v->v.str.data);
     }
@@ -600,8 +617,8 @@ int seekdb_value_create_int64(int64_t int_value, SeekdbValue *out_value)
     if (!out_value) return SEEKDB_INVALID_ARGUMENT;
     SeekdbValueImpl *v = calloc(1, sizeof(*v));
     if (!v) return SEEKDB_INTERNAL_ERROR;
-    v->type   = SEEKDB_TYPE_INT64;
-    v->v.i64  = int_value;
+    v->type  = SEEKDB_TYPE_INT64;
+    v->v.i64 = int_value;
     *out_value = (SeekdbValue)v;
     return SEEKDB_SUCCESS;
 }

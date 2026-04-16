@@ -1,10 +1,10 @@
 /*
  * Smoke test for seekdb_client.
  *
- * Assumes a SeekDB (or MariaDB / MySQL) server is running on 127.0.0.1
- * at the port passed on the command line, with user 'root' and no password.
+ * seekdb_open() forks a seekdb server and connects via Unix domain socket.
+ * The "seekdb" binary must be on $PATH.
  *
- * Usage: ./seekdb_hello [port]   (default port 3306)
+ * Usage: ./seekdb_hello <data_dir> [port]   (port <= 0 for UDS-only)
  */
 
 #include "seekdb.h"
@@ -22,15 +22,20 @@
 
 int main(int argc, char **argv)
 {
-    int port = (argc >= 2) ? atoi(argv[1]) : 3306;
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <data_dir> [port]\n", argv[0]);
+        return 1;
+    }
+    const char *data_dir = argv[1];
+    int port = (argc >= 3) ? atoi(argv[2]) : 0;
 
     SeekdbHandle h = NULL;
-    CHECK(seekdb_open("/tmp/seekdb-data", port, &h), "seekdb_open");
+    CHECK(seekdb_open(data_dir, port, &h), "seekdb_open");
 
     SeekdbConnection c = NULL;
-    CHECK(seekdb_connect(h, NULL /* default db */, true, &c), "seekdb_connect");
+    CHECK(seekdb_connect(h, NULL, true, &c), "seekdb_connect");
 
-    /* 1) Plain query path. */
+    /* 1) Plain query. */
     SeekdbResult r = NULL;
     const char *sql = "SELECT 1+2 AS sum, 'hello' AS greeting";
     CHECK(seekdb_query(c, sql, (int64_t)strlen(sql), &r), "seekdb_query");
@@ -56,7 +61,7 @@ int main(int argc, char **argv)
     }
     seekdb_result_free(r);
 
-    /* 2) Prepared statement path with int64 parameter. */
+    /* 2) Prepared statement with int64 parameter. */
     SeekdbStmt s = NULL;
     CHECK(seekdb_stmt_prepare(c, "SELECT ? * 10", &s), "seekdb_stmt_prepare");
     printf("stmt param count: %d\n", seekdb_stmt_param_count(s));
@@ -72,7 +77,7 @@ int main(int argc, char **argv)
     seekdb_result_free(r2);
     seekdb_stmt_free(s);
 
-    /* 3) Transaction trio. */
+    /* 3) Transaction. */
     CHECK(seekdb_trx_begin(c),    "seekdb_trx_begin");
     CHECK(seekdb_trx_rollback(c), "seekdb_trx_rollback");
 

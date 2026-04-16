@@ -7,11 +7,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ----------------------------------------------------------------------------
 # Find libmariadb (MariaDB Connector/C)
-#
-# Search order:
-#   1. cmake -DSEEKDB_LIBMARIADB_DIR=/path/to/libmariadb-install-prefix
-#   2. pkg-config (libmariadb)
-#   3. Homebrew default (/opt/homebrew or /usr/local)
 # ----------------------------------------------------------------------------
 
 set(SEEKDB_LIBMARIADB_DIR "" CACHE PATH "Install prefix of libmariadb")
@@ -23,7 +18,6 @@ if (SEEKDB_LIBMARIADB_DIR)
     list(APPEND _mariadb_lib_hint "${SEEKDB_LIBMARIADB_DIR}/lib")
 endif()
 
-# pkg-config probe (optional)
 find_package(PkgConfig QUIET)
 if (PkgConfig_FOUND)
     pkg_check_modules(_PC_MARIADB QUIET libmariadb)
@@ -83,4 +77,7 @@ option(SEEKDB_BUILD_EXAMPLES "Build seekdb-client examples" ON)
 if (SEEKDB_BUILD_EXAMPLES)
     add_executable(seekdb_hello examples/hello.c)
     target_link_libraries(seekdb_hello PRIVATE seekdb_client)
+
+    add_executable(seekdb_cis examples/create_insert_select.c)
+    target_link_libraries(seekdb_cis PRIVATE seekdb_client)
 endif()
