@@ -4,7 +4,7 @@
  * seekdb_open() forks a seekdb server and connects via Unix domain socket.
  * The "seekdb" binary must be on $PATH.
  *
- * Usage: ./seekdb_hello <data_dir> [port]   (port <= 0 for UDS-only)
+ * Usage: ./seekdb_hello <seekdb_bin> <data_dir> [port]
  */
 
 #include "seekdb.h"
@@ -22,15 +22,16 @@
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <data_dir> [port]\n", argv[0]);
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <seekdb_bin> <data_dir> [port]\n", argv[0]);
         return 1;
     }
-    const char *data_dir = argv[1];
-    int port = (argc >= 3) ? atoi(argv[2]) : 0;
+    const char *bin_path = argv[1];
+    const char *data_dir = argv[2];
+    int port = (argc >= 4) ? atoi(argv[3]) : 0;
 
     SeekdbHandle h = NULL;
-    CHECK(seekdb_open(data_dir, port, &h), "seekdb_open");
+    CHECK(seekdb_open(bin_path, data_dir, port, &h), "seekdb_open");
 
     SeekdbConnection c = NULL;
     CHECK(seekdb_connect(h, NULL, true, &c), "seekdb_connect");

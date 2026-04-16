@@ -32,9 +32,10 @@ static int wait_for_socket(const char *path, int timeout_ms)
     return -1;
 }
 
-int seekdb_open(const char *db_dir, int port, SeekdbHandle *out_handle)
+int seekdb_open(const char *bin_path, const char *db_dir, int port,
+                SeekdbHandle *out_handle)
 {
-    if (!db_dir || !out_handle) return SEEKDB_INVALID_ARGUMENT;
+    if (!bin_path || !db_dir || !out_handle) return SEEKDB_INVALID_ARGUMENT;
     *out_handle = NULL;
 
     SeekdbHandleImpl *h = calloc(1, sizeof(*h));
@@ -53,10 +54,10 @@ int seekdb_open(const char *db_dir, int port, SeekdbHandle *out_handle)
     if (pid == 0) {
         if (chdir(db_dir) < 0) _exit(127);
 
-        execlp("seekdb", "seekdb",
-               "--data-dir", db_dir,
-               "-Dtest", "-A",
-               (char *)NULL);
+        execl(bin_path, bin_path,
+              "--data-dir", db_dir,
+              "-Dtest", "-A",
+              (char *)NULL);
         _exit(127);
     }
 
