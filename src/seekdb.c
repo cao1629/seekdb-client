@@ -52,9 +52,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     if (pid == 0) {
-        if (chdir(db_dir) < 0) _exit(127);
-
         execl(bin_path, bin_path,
+              "--base-dir", db_dir,
               "--nodaemon",
               (char *)NULL);
         _exit(127);
