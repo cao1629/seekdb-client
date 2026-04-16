@@ -45,32 +45,72 @@ static int wait_for_ready(const char *sock_path, int timeout_ms)
     return -1;
 }
 
-static pid_t read_pid_file(const char *path)
+/*
+ * Server manager — runs in a daemonized child process.
+ *
+ * Responsibilities:
+ *   1. Exclusive flock on seekdb.pid — prevents multiple servers.
+ *   2. Fork+exec seekdb with --nodaemon (stays as our direct child).
+ *   3. Every 5s, try exclusive flock on seekdb.clients.
+ *      If it succeeds, no clients remain — kill seekdb and exit.
+ *   4. If seekdb dies on its own, exit.
+ */
+static void server_manager(const char *bin_path, const char *db_dir,
+                           const char *clients_path)
 {
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    pid_t pid = 0;
-    if (fscanf(f, "%d", &pid) != 1) pid = 0;
-    fclose(f);
-    return pid;
-}
+    char pid_lock_path[256];
+    snprintf(pid_lock_path, sizeof(pid_lock_path), "%s/run/seekdb.pid", db_dir);
 
-static void kill_and_wait(pid_t pid, int timeout_s)
-{
-    if (pid <= 0) return;
-    kill(pid, SIGTERM);
-    for (int i = 0; i < timeout_s * 2; ++i) {
-        if (kill(pid, 0) != 0) return;   /* process gone */
-        usleep(500000);
+    /* 1. Exclusive lock on seekdb.pid — only one manager at a time. */
+    int pid_fd = open(pid_lock_path, O_CREAT | O_RDWR, 0644);
+    if (pid_fd < 0 || flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (pid_fd >= 0) close(pid_fd);
+        _exit(0);
     }
-    kill(pid, SIGKILL);
-}
 
-static void handle_cleanup(SeekdbHandleImpl *h)
-{
-    if (h->lock_fd >= 0) close(h->lock_fd);
-    xfree(h->db_dir);
-    free(h);
+    /* 2. Fork seekdb. */
+    pid_t seekdb_pid = fork();
+    if (seekdb_pid == 0) {
+        close(pid_fd);
+        execl(bin_path, bin_path,
+              "--base-dir", db_dir,
+              "--nodaemon",
+              (char *)NULL);
+        _exit(127);
+    }
+    if (seekdb_pid < 0) {
+        close(pid_fd);
+        _exit(1);
+    }
+
+    /* Write seekdb PID to the lock file for diagnostics. */
+    dprintf(pid_fd, "%d\n", (int)seekdb_pid);
+
+    /* 3. Monitor loop. */
+    int clients_fd = open(clients_path, O_CREAT | O_RDWR, 0644);
+
+    for (;;) {
+        /* Check if seekdb child is still alive. */
+        int status;
+        if (waitpid(seekdb_pid, &status, WNOHANG) == seekdb_pid)
+            break;
+
+        sleep(5);
+
+        /* Try exclusive on seekdb.clients — succeeds when no clients. */
+        if (clients_fd >= 0 && flock(clients_fd, LOCK_EX | LOCK_NB) == 0) {
+            flock(clients_fd, LOCK_UN);
+            kill(seekdb_pid, SIGTERM);
+            waitpid(seekdb_pid, NULL, 0);
+            break;
+        }
+    }
+
+    if (clients_fd >= 0) close(clients_fd);
+    unlink(pid_lock_path);
+    flock(pid_fd, LOCK_UN);
+    close(pid_fd);
+    _exit(0);
 }
 
 int seekdb_open(const char *bin_path, const char *db_dir, int port,
@@ -83,72 +123,49 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     if (!h) return SEEKDB_INTERNAL_ERROR;
 
     h->db_dir = xstrdup(db_dir);
-    h->lock_fd = -1;
-    snprintf(h->sock_path, sizeof(h->sock_path), "%s/run/sql.sock", db_dir);
-    snprintf(h->lock_path, sizeof(h->lock_path), "%s/run/seekdb.clients", db_dir);
-    snprintf(h->pid_path,  sizeof(h->pid_path),  "%s/run/observer.pid", db_dir);
+    h->clients_fd = -1;
+    snprintf(h->sock_path,    sizeof(h->sock_path),    "%s/run/sql.sock",        db_dir);
+    snprintf(h->clients_path, sizeof(h->clients_path), "%s/run/seekdb.clients",  db_dir);
 
     /* Ensure run/ directory exists. */
     char run_dir[256];
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
     mkdir(run_dir, 0755);
 
-    /* Open lock file. */
-    h->lock_fd = open(h->lock_path, O_CREAT | O_RDWR, 0644);
-    if (h->lock_fd < 0) {
-        handle_cleanup(h);
+    /* Take shared lock on seekdb.clients — registers us as a client. */
+    h->clients_fd = open(h->clients_path, O_CREAT | O_RDWR, 0644);
+    if (h->clients_fd < 0) {
+        xfree(h->db_dir);
+        free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
+    flock(h->clients_fd, LOCK_SH);
 
-    /* Take shared lock — registers us as a client. */
-    flock(h->lock_fd, LOCK_SH);
-
-    /* Probe: is the server already running? */
+    /* Is the server already running? */
     if (probe_server(h->sock_path)) {
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
 
-    /* Server not running — upgrade to exclusive to serialize starters. */
-    flock(h->lock_fd, LOCK_EX);
-
-    /* Double-check: another client may have started it while we waited. */
-    if (probe_server(h->sock_path)) {
-        flock(h->lock_fd, LOCK_SH);
-        *out_handle = (SeekdbHandle)h;
-        return SEEKDB_SUCCESS;
-    }
-
-    /* Fork + exec seekdb (it daemonizes itself). */
+    /* Start the server manager (double-fork to daemonize). */
     pid_t pid = fork();
-    if (pid < 0) {
-        flock(h->lock_fd, LOCK_UN);
-        handle_cleanup(h);
-        return SEEKDB_INTERNAL_ERROR;
-    }
-
     if (pid == 0) {
-        execl(bin_path, bin_path,
-              "--base-dir", db_dir,
-              (char *)NULL);
-        _exit(127);
+        if (fork() == 0) {
+            server_manager(bin_path, db_dir, h->clients_path);
+        }
+        _exit(0);
     }
+    if (pid > 0) waitpid(pid, NULL, 0);   /* reap intermediate */
 
-    /* Reap the launcher (seekdb daemonizes and exits quickly). */
-    waitpid(pid, NULL, 0);
-
-    /* Wait for the daemon to become ready. */
+    /* Wait for the server to become ready. */
     if (wait_for_ready(h->sock_path, 120000) < 0) {
         fprintf(stderr, "seekdb: server not ready after 120s\n");
-        pid_t server_pid = read_pid_file(h->pid_path);
-        if (server_pid > 0) kill_and_wait(server_pid, 10);
-        flock(h->lock_fd, LOCK_UN);
-        handle_cleanup(h);
+        flock(h->clients_fd, LOCK_UN);
+        close(h->clients_fd);
+        xfree(h->db_dir);
+        free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-
-    /* Downgrade to shared lock. */
-    flock(h->lock_fd, LOCK_SH);
 
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
@@ -159,20 +176,11 @@ int seekdb_close(SeekdbHandle handle)
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = handle;
 
-    if (h->lock_fd >= 0) {
-        /* Release our shared lock. */
-        flock(h->lock_fd, LOCK_UN);
-
-        /* Try non-blocking exclusive — succeeds only if we're the last client. */
-        if (flock(h->lock_fd, LOCK_EX | LOCK_NB) == 0) {
-            pid_t server_pid = read_pid_file(h->pid_path);
-            if (server_pid > 0) {
-                kill_and_wait(server_pid, 30);
-            }
-            unlink(h->lock_path);
-            flock(h->lock_fd, LOCK_UN);
-        }
-        close(h->lock_fd);
+    /* Release our shared lock. The server manager will notice
+       when all clients have released and shut down the server. */
+    if (h->clients_fd >= 0) {
+        flock(h->clients_fd, LOCK_UN);
+        close(h->clients_fd);
     }
 
     xfree(h->db_dir);
