@@ -20,18 +20,6 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 /* ============================================================ handle ===== */
 
-static int wait_for_socket(const char *path, int timeout_ms)
-{
-    int waited = 0;
-    int interval = 50000; /* 50 ms */
-    while (waited < timeout_ms * 1000) {
-        if (access(path, F_OK) == 0) return 0;
-        usleep(interval);
-        waited += interval;
-    }
-    return -1;
-}
-
 static int wait_for_ready(const char *sock_path, int timeout_ms)
 {
     int waited = 0;
@@ -80,16 +68,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     h->pid = pid;
-
-    if (wait_for_socket(h->sock_path, 30000) < 0) {
-        fprintf(stderr, "seekdb: socket %s did not appear within 30s\n",
-                h->sock_path);
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-        xfree(h->db_dir);
-        free(h);
-        return SEEKDB_INTERNAL_ERROR;
-    }
 
     if (wait_for_ready(h->sock_path, 120000) < 0) {
         fprintf(stderr, "seekdb: server not ready after 120s\n");
