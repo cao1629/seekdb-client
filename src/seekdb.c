@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <mysql.h>
@@ -53,6 +54,11 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     h->clients_fd = -1;
     snprintf(h->sock_path,    sizeof(h->sock_path),    "%s/run/sql.sock",        db_dir);
     snprintf(h->clients_path, sizeof(h->clients_path), "%s/run/seekdb.clients",  db_dir);
+
+    /* Ensure run/ directory exists. */
+    char run_dir[256];
+    snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
+    mkdir(run_dir, 0755);
 
     /* Take shared lock on seekdb.clients — registers us as a client. */
     h->clients_fd = open(h->clients_path, O_CREAT | O_RDWR, 0644);
