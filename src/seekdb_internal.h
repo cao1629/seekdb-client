@@ -9,8 +9,10 @@
 
 typedef struct {
     char   *db_dir;
-    pid_t   pid;
     char    sock_path[256];
+    char    lock_path[256];
+    char    pid_path[256];
+    int     lock_fd;
 } SeekdbHandleImpl;
 
 typedef struct {

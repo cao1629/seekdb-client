@@ -1,12 +1,15 @@
 #include "seekdb_internal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <mysql.h>
 
@@ -20,24 +23,54 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 /* ============================================================ handle ===== */
 
+static int probe_server(const char *sock_path)
+{
+    MYSQL *m = mysql_init(NULL);
+    if (!m) return 0;
+    int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, sock_path,
+                                CLIENT_MULTI_STATEMENTS) != NULL;
+    mysql_close(m);
+    return ok;
+}
+
 static int wait_for_ready(const char *sock_path, int timeout_ms)
 {
     int waited = 0;
     int interval = 500000; /* 500 ms */
     while (waited < timeout_ms * 1000) {
-        MYSQL *m = mysql_init(NULL);
-        if (m) {
-            if (mysql_real_connect(m, NULL, "root", "", NULL, 0, sock_path,
-                                   CLIENT_MULTI_STATEMENTS)) {
-                mysql_close(m);
-                return 0;
-            }
-            mysql_close(m);
-        }
+        if (probe_server(sock_path)) return 0;
         usleep(interval);
         waited += interval;
     }
     return -1;
+}
+
+static pid_t read_pid_file(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    pid_t pid = 0;
+    if (fscanf(f, "%d", &pid) != 1) pid = 0;
+    fclose(f);
+    return pid;
+}
+
+static void kill_and_wait(pid_t pid, int timeout_s)
+{
+    if (pid <= 0) return;
+    kill(pid, SIGTERM);
+    for (int i = 0; i < timeout_s * 2; ++i) {
+        if (kill(pid, 0) != 0) return;   /* process gone */
+        usleep(500000);
+    }
+    kill(pid, SIGKILL);
+}
+
+static void handle_cleanup(SeekdbHandleImpl *h)
+{
+    if (h->lock_fd >= 0) close(h->lock_fd);
+    xfree(h->db_dir);
+    free(h);
 }
 
 int seekdb_open(const char *bin_path, const char *db_dir, int port,
@@ -50,33 +83,72 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     if (!h) return SEEKDB_INTERNAL_ERROR;
 
     h->db_dir = xstrdup(db_dir);
+    h->lock_fd = -1;
     snprintf(h->sock_path, sizeof(h->sock_path), "%s/run/sql.sock", db_dir);
+    snprintf(h->lock_path, sizeof(h->lock_path), "%s/run/seekdb.clients", db_dir);
+    snprintf(h->pid_path,  sizeof(h->pid_path),  "%s/run/observer.pid", db_dir);
 
+    /* Ensure run/ directory exists. */
+    char run_dir[256];
+    snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
+    mkdir(run_dir, 0755);
+
+    /* Open lock file. */
+    h->lock_fd = open(h->lock_path, O_CREAT | O_RDWR, 0644);
+    if (h->lock_fd < 0) {
+        handle_cleanup(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
+
+    /* Take shared lock — registers us as a client. */
+    flock(h->lock_fd, LOCK_SH);
+
+    /* Probe: is the server already running? */
+    if (probe_server(h->sock_path)) {
+        *out_handle = (SeekdbHandle)h;
+        return SEEKDB_SUCCESS;
+    }
+
+    /* Server not running — upgrade to exclusive to serialize starters. */
+    flock(h->lock_fd, LOCK_EX);
+
+    /* Double-check: another client may have started it while we waited. */
+    if (probe_server(h->sock_path)) {
+        flock(h->lock_fd, LOCK_SH);
+        *out_handle = (SeekdbHandle)h;
+        return SEEKDB_SUCCESS;
+    }
+
+    /* Fork + exec seekdb (it daemonizes itself). */
     pid_t pid = fork();
     if (pid < 0) {
-        xfree(h->db_dir);
-        free(h);
+        flock(h->lock_fd, LOCK_UN);
+        handle_cleanup(h);
         return SEEKDB_INTERNAL_ERROR;
     }
 
     if (pid == 0) {
         execl(bin_path, bin_path,
               "--base-dir", db_dir,
-              "--nodaemon",
               (char *)NULL);
         _exit(127);
     }
 
-    h->pid = pid;
+    /* Reap the launcher (seekdb daemonizes and exits quickly). */
+    waitpid(pid, NULL, 0);
 
+    /* Wait for the daemon to become ready. */
     if (wait_for_ready(h->sock_path, 120000) < 0) {
         fprintf(stderr, "seekdb: server not ready after 120s\n");
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-        xfree(h->db_dir);
-        free(h);
+        pid_t server_pid = read_pid_file(h->pid_path);
+        if (server_pid > 0) kill_and_wait(server_pid, 10);
+        flock(h->lock_fd, LOCK_UN);
+        handle_cleanup(h);
         return SEEKDB_INTERNAL_ERROR;
     }
+
+    /* Downgrade to shared lock. */
+    flock(h->lock_fd, LOCK_SH);
 
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
@@ -87,10 +159,20 @@ int seekdb_close(SeekdbHandle handle)
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = handle;
 
-    if (h->pid > 0) {
-        kill(h->pid, SIGTERM);
-        int status;
-        waitpid(h->pid, &status, 0);
+    if (h->lock_fd >= 0) {
+        /* Release our shared lock. */
+        flock(h->lock_fd, LOCK_UN);
+
+        /* Try non-blocking exclusive — succeeds only if we're the last client. */
+        if (flock(h->lock_fd, LOCK_EX | LOCK_NB) == 0) {
+            pid_t server_pid = read_pid_file(h->pid_path);
+            if (server_pid > 0) {
+                kill_and_wait(server_pid, 30);
+            }
+            unlink(h->lock_path);
+            flock(h->lock_fd, LOCK_UN);
+        }
+        close(h->lock_fd);
     }
 
     xfree(h->db_dir);
