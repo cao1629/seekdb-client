@@ -43,10 +43,7 @@ protected:
         bin_path_ = bin;
         ASSERT_TRUE(fs::exists(bin_path_)) << "no such file: " << bin_path_;
 
-        const char *tmp = std::getenv("TMPDIR");
-        db_dir_ = std::string(tmp ? tmp : "/tmp") + "/seekdb_test_" +
-                  std::to_string(getpid()) + "_" +
-                  ::testing::UnitTest::GetInstance()->current_test_info()->name();
+        db_dir_ = "/tmp/seekdb_test_db";
         fs::remove_all(db_dir_);
         fs::create_directories(db_dir_);
 
