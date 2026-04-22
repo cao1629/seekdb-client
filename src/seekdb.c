@@ -69,7 +69,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     mkdir(run_dir, 0755);
 
 
-    h->clients_lock_fd = open(h->clients_lock_path, O_CREAT | O_RDWR, 0644);
+    h->clients_lock_fd = open(h->clients_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (h->clients_lock_fd < 0) {
         xfree(h->db_dir);
         free(h);
@@ -83,7 +83,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_SUCCESS;
     }
 
-    int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR, 0644);
+    int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (startup_lock_fd < 0) {
         flock(h->clients_lock_fd, LOCK_UN);
         close(h->clients_lock_fd);
