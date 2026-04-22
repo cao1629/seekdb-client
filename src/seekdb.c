@@ -64,6 +64,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(h->clients_lock_path,  sizeof(h->clients_lock_path),  "%s/run/seekdb.clients",  db_dir);
     snprintf(h->startup_lock_path,  sizeof(h->startup_lock_path),  "%s/run/seekdb.startup",  db_dir);
 
+    mkdir(db_dir, 0755);
+
     char run_dir[256];
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
     mkdir(run_dir, 0755);

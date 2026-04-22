@@ -1,13 +1,17 @@
-cmake_minimum_required(VERSION 3.13)
-project(seekdb_client C)
+cmake_minimum_required(VERSION 3.14)
+project(seekdb_client C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
+
+enable_testing()
 
 # ----------------------------------------------------------------------------
 # Find libmariadb (MariaDB Connector/C)
@@ -87,8 +91,23 @@ target_link_libraries(seekdb_cli PRIVATE seekdb_client)
 # Tests
 # ----------------------------------------------------------------------------
 
-add_executable(test_spawn_race tests/test_spawn_race.c)
-target_link_libraries(test_spawn_race PRIVATE seekdb_client)
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+include(GoogleTest)
+
+add_executable(test_spawn_race tests/test_spawn_race.cc)
+target_link_libraries(test_spawn_race PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_spawn_race)
+
+add_executable(test_first_open tests/test_first_open.cc)
+target_link_libraries(test_first_open PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_first_open)
 
 find_library(READLINE_LIBRARY readline
     HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
