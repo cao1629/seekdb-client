@@ -79,6 +79,13 @@ target_include_directories(seekdb_cli PRIVATE
     ${MARIADB_INCLUDE_DIR})
 target_link_libraries(seekdb_cli PRIVATE seekdb_client)
 
+# ----------------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------------
+
+add_executable(test_spawn_race tests/test_spawn_race.c)
+target_link_libraries(test_spawn_race PRIVATE seekdb_client)
+
 find_library(READLINE_LIBRARY readline
     HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
 find_path(READLINE_INCLUDE_DIR readline/readline.h

@@ -57,71 +57,65 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
     SeekdbHandleImpl *h = calloc(1, sizeof(*h));
     if (!h) return SEEKDB_INTERNAL_ERROR;
-
+    // DEBUG_SYNC(e1);
     h->db_dir = xstrdup(db_dir);
-    h->clients_fd = -1;
+    h->clients_lock_fd = -1;
     snprintf(h->sock_path,     sizeof(h->sock_path),     "%s/run/sql.sock",        db_dir);
-    snprintf(h->clients_path,  sizeof(h->clients_path),  "%s/run/seekdb.clients",  db_dir);
-    snprintf(h->startup_path,  sizeof(h->startup_path),  "%s/run/seekdb.startup",  db_dir);
+    snprintf(h->clients_lock_path,  sizeof(h->clients_lock_path),  "%s/run/seekdb.clients",  db_dir);
+    snprintf(h->startup_lock_path,  sizeof(h->startup_lock_path),  "%s/run/seekdb.startup",  db_dir);
 
-    /* Ensure run/ directory exists. */
     char run_dir[256];
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
     mkdir(run_dir, 0755);
 
-    /* Take shared lock on seekdb.clients — registers us as a client. */
-    h->clients_fd = open(h->clients_path, O_CREAT | O_RDWR, 0644);
-    if (h->clients_fd < 0) {
+
+    h->clients_lock_fd = open(h->clients_lock_path, O_CREAT | O_RDWR, 0644);
+    if (h->clients_lock_fd < 0) {
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-    flock(h->clients_fd, LOCK_SH);
 
-    /* Fast path: is a server already serving? */
+    flock(h->clients_lock_fd, LOCK_SH);
+
     if (try_connect(h)) {
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
 
-    /* Spawn path: serialize on seekdb.startup so at most one client is
-     * spawning + waiting at a time. */
-    int startup_fd = open(h->startup_path, O_CREAT | O_RDWR, 0644);
-    if (startup_fd < 0) {
-        flock(h->clients_fd, LOCK_UN);
-        close(h->clients_fd);
+    int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR, 0644);
+    if (startup_lock_fd < 0) {
+        flock(h->clients_lock_fd, LOCK_UN);
+        close(h->clients_lock_fd);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-    flock(startup_fd, LOCK_EX);                 /* blocks if a peer is spawning */
+    flock(startup_lock_fd, LOCK_EX);                 /* blocks if a peer is spawning */
 
-    /* posix_spawn seekdb-server. */
     pid_t pid;
-    {
-        char *argv[] = {(char *)bin_path, (char *)db_dir, NULL};
-        if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
-            flock(startup_fd, LOCK_UN);
-            close(startup_fd);
-            flock(h->clients_fd, LOCK_UN);
-            close(h->clients_fd);
-            xfree(h->db_dir);
-            free(h);
-            return SEEKDB_INTERNAL_ERROR;
-        }
+    char base_dir_arg[512];
+    snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
+    char *argv[] = {(char *)bin_path, base_dir_arg, "--embedded", NULL};
+    if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
+        flock(startup_lock_fd, LOCK_UN);
+        close(startup_lock_fd);
+        flock(h->clients_lock_fd, LOCK_UN);
+        close(h->clients_lock_fd);
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
     }
 
-    /* Wait for the spawned server (or a peer's server that already won the
-     * seekdb.pid race) to become ready. */
     int rc = wait_for_ready(h, pid);
 
-    flock(startup_fd, LOCK_UN);
-    close(startup_fd);
+    flock(startup_lock_fd, LOCK_UN);
+    close(startup_lock_fd);
 
     if (rc < 0) {
         fprintf(stderr, "seekdb: server not ready\n");
-        flock(h->clients_fd, LOCK_UN);
-        close(h->clients_fd);
+        flock(h->clients_lock_fd, LOCK_UN);
+        close(h->clients_lock_fd);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
@@ -136,9 +130,9 @@ int seekdb_close(SeekdbHandle handle)
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = handle;
 
-    if (h->clients_fd >= 0) {
-        flock(h->clients_fd, LOCK_UN);
-        close(h->clients_fd);
+    if (h->clients_lock_fd >= 0) {
+        flock(h->clients_lock_fd, LOCK_UN);
+        close(h->clients_lock_fd);
     }
 
     xfree(h->db_dir);
@@ -284,6 +278,17 @@ int seekdb_query(SeekdbConnection connection, const char *sql, int64_t sql_len,
 
 /* ====================================================== prepared stmt == */
 
+/* Release any heap-owned memory held by a param slot. Safe on zero-init
+ * slots and safe to call repeatedly (sets owned pointers to NULL). */
+static void slot_free(SeekdbParamSlot *slot)
+{
+    if (slot->type == SEEKDB_TYPE_VARCHAR || slot->type == SEEKDB_TYPE_DECIMAL) {
+        free(slot->v.str.buf);
+        slot->v.str.buf = NULL;
+        slot->v.str.len = 0;
+    }
+}
+
 int seekdb_stmt_prepare(SeekdbConnection connection, const char *sql,
                         SeekdbStmt *out_stmt)
 {
@@ -306,11 +311,11 @@ int seekdb_stmt_prepare(SeekdbConnection connection, const char *sql,
     s->stmt        = m;
     s->param_count = (int)mysql_stmt_param_count(m);
     if (s->param_count > 0) {
-        s->param_binds     = calloc((size_t)s->param_count, sizeof(MYSQL_BIND));
-        s->param_int64_buf = calloc((size_t)s->param_count, sizeof(int64_t));
-        if (!s->param_binds || !s->param_int64_buf) {
+        s->param_binds = calloc((size_t)s->param_count, sizeof(MYSQL_BIND));
+        s->param_slots = calloc((size_t)s->param_count, sizeof(SeekdbParamSlot));
+        if (!s->param_binds || !s->param_slots) {
             free(s->param_binds);
-            free(s->param_int64_buf);
+            free(s->param_slots);
             free(s);
             mysql_stmt_close(m);
             return SEEKDB_INTERNAL_ERROR;
@@ -326,8 +331,11 @@ int seekdb_stmt_free(SeekdbStmt stmt)
     if (!stmt) return SEEKDB_INVALID_ARGUMENT;
     SeekdbStmtImpl *s = stmt;
     if (s->stmt) mysql_stmt_close(s->stmt);
+    if (s->param_slots) {
+        for (int i = 0; i < s->param_count; i++) slot_free(&s->param_slots[i]);
+        free(s->param_slots);
+    }
     free(s->param_binds);
-    free(s->param_int64_buf);
     free(s);
     return SEEKDB_SUCCESS;
 }
@@ -342,6 +350,10 @@ int seekdb_stmt_clear_bindings(SeekdbStmt stmt)
 {
     if (!stmt) return SEEKDB_INVALID_ARGUMENT;
     SeekdbStmtImpl *s = stmt;
+    if (s->param_slots && s->param_count > 0) {
+        for (int i = 0; i < s->param_count; i++) slot_free(&s->param_slots[i]);
+        memset(s->param_slots, 0, (size_t)s->param_count * sizeof(SeekdbParamSlot));
+    }
     if (s->param_binds && s->param_count > 0)
         memset(s->param_binds, 0, (size_t)s->param_count * sizeof(MYSQL_BIND));
     s->bound = 0;
@@ -354,13 +366,86 @@ int seekdb_stmt_bind_int64(SeekdbStmt stmt, int64_t index, int64_t value)
     SeekdbStmtImpl *s = stmt;
     if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
 
-    s->param_int64_buf[index] = value;
+    SeekdbParamSlot *slot = &s->param_slots[index];
+    slot_free(slot);
+    slot->type  = SEEKDB_TYPE_INT64;
+    slot->v.i64 = value;
 
     MYSQL_BIND *b = &s->param_binds[index];
     memset(b, 0, sizeof(*b));
     b->buffer_type = MYSQL_TYPE_LONGLONG;
-    b->buffer      = &s->param_int64_buf[index];
+    b->buffer      = &slot->v.i64;
     b->is_unsigned = 0;
+
+    s->bound = 0;
+    return SEEKDB_SUCCESS;
+}
+
+int seekdb_stmt_bind_float(SeekdbStmt stmt, int64_t index, double value)
+{
+    if (!stmt) return SEEKDB_INVALID_ARGUMENT;
+    SeekdbStmtImpl *s = stmt;
+    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
+
+    SeekdbParamSlot *slot = &s->param_slots[index];
+    slot_free(slot);
+    slot->type  = SEEKDB_TYPE_FLOAT;
+    slot->v.f64 = value;
+
+    MYSQL_BIND *b = &s->param_binds[index];
+    memset(b, 0, sizeof(*b));
+    b->buffer_type = MYSQL_TYPE_DOUBLE;
+    b->buffer      = &slot->v.f64;
+
+    s->bound = 0;
+    return SEEKDB_SUCCESS;
+}
+
+int seekdb_stmt_bind_str(SeekdbStmt stmt, int64_t index,
+                         const char *data, size_t len)
+{
+    if (!stmt || (!data && len > 0)) return SEEKDB_INVALID_ARGUMENT;
+    SeekdbStmtImpl *s = stmt;
+    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
+
+    char *copy = NULL;
+    if (len > 0) {
+        copy = malloc(len);
+        if (!copy) return SEEKDB_INTERNAL_ERROR;
+        memcpy(copy, data, len);
+    }
+
+    SeekdbParamSlot *slot = &s->param_slots[index];
+    slot_free(slot);
+    slot->type      = SEEKDB_TYPE_VARCHAR;
+    slot->v.str.buf = copy;
+    slot->v.str.len = (unsigned long)len;
+
+    MYSQL_BIND *b = &s->param_binds[index];
+    memset(b, 0, sizeof(*b));
+    b->buffer_type   = MYSQL_TYPE_STRING;
+    b->buffer        = slot->v.str.buf;
+    b->buffer_length = slot->v.str.len;
+    b->length        = &slot->v.str.len;
+
+    s->bound = 0;
+    return SEEKDB_SUCCESS;
+}
+
+int seekdb_stmt_bind_null(SeekdbStmt stmt, int64_t index)
+{
+    if (!stmt) return SEEKDB_INVALID_ARGUMENT;
+    SeekdbStmtImpl *s = stmt;
+    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
+
+    SeekdbParamSlot *slot = &s->param_slots[index];
+    slot_free(slot);
+    slot->type = SEEKDB_TYPE_NULL;
+
+    MYSQL_BIND *b = &s->param_binds[index];
+    memset(b, 0, sizeof(*b));
+    b->buffer_type   = MYSQL_TYPE_NULL;
+    b->is_null_value = 1;
 
     s->bound = 0;
     return SEEKDB_SUCCESS;
@@ -370,8 +455,19 @@ int seekdb_stmt_bind(SeekdbStmt stmt, int64_t index, SeekdbValue value)
 {
     if (!stmt || !value) return SEEKDB_INVALID_ARGUMENT;
     SeekdbValueImpl *v = value;
-    if (v->type != SEEKDB_TYPE_INT64) return SEEKDB_INVALID_ARGUMENT;
-    return seekdb_stmt_bind_int64(stmt, index, v->v.i64);
+    switch (v->type) {
+        case SEEKDB_TYPE_INT64:
+            return seekdb_stmt_bind_int64(stmt, index, v->v.i64);
+        case SEEKDB_TYPE_FLOAT:
+            return seekdb_stmt_bind_float(stmt, index, v->v.f64);
+        case SEEKDB_TYPE_VARCHAR:
+            return seekdb_stmt_bind_str(stmt, index,
+                                        v->v.str.data, v->v.str.len);
+        case SEEKDB_TYPE_NULL:
+            return seekdb_stmt_bind_null(stmt, index);
+        default:
+            return SEEKDB_INVALID_ARGUMENT;
+    }
 }
 
 static int stmt_setup_result(SeekdbStmtImpl *s, SeekdbResultImpl *r)
