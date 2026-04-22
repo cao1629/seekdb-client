@@ -96,7 +96,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     pid_t pid;
     char base_dir_arg[512];
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
-    char *argv[] = {(char *)bin_path, base_dir_arg, "--embedded", NULL};
+    char *argv[] = {(char *)bin_path, base_dir_arg, "--embedded", "--nodaemon", NULL};
     if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
         flock(startup_lock_fd, LOCK_UN);
         close(startup_lock_fd);
