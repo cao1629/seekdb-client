@@ -50,10 +50,6 @@ int seekdb_stmt_free(SeekdbStmt stmt);
 int seekdb_stmt_param_count(SeekdbStmt stmt);
 int seekdb_stmt_bind(SeekdbStmt stmt, int64_t index, SeekdbValue value);
 int seekdb_stmt_bind_int64(SeekdbStmt stmt, int64_t index, int64_t value);
-int seekdb_stmt_bind_float(SeekdbStmt stmt, int64_t index, double value);
-int seekdb_stmt_bind_str(SeekdbStmt stmt, int64_t index,
-                         const char *data, size_t len);
-int seekdb_stmt_bind_null(SeekdbStmt stmt, int64_t index);
 int seekdb_stmt_clear_bindings(SeekdbStmt stmt);
 int seekdb_stmt_execute(SeekdbStmt stmt, SeekdbResult *out_result);
 

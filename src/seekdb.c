@@ -278,17 +278,6 @@ int seekdb_query(SeekdbConnection connection, const char *sql, int64_t sql_len,
 
 /* ====================================================== prepared stmt == */
 
-/* Release any heap-owned memory held by a param slot. Safe on zero-init
- * slots and safe to call repeatedly (sets owned pointers to NULL). */
-static void slot_free(SeekdbParamSlot *slot)
-{
-    if (slot->type == SEEKDB_TYPE_VARCHAR || slot->type == SEEKDB_TYPE_DECIMAL) {
-        free(slot->v.str.buf);
-        slot->v.str.buf = NULL;
-        slot->v.str.len = 0;
-    }
-}
-
 int seekdb_stmt_prepare(SeekdbConnection connection, const char *sql,
                         SeekdbStmt *out_stmt)
 {
@@ -311,11 +300,11 @@ int seekdb_stmt_prepare(SeekdbConnection connection, const char *sql,
     s->stmt        = m;
     s->param_count = (int)mysql_stmt_param_count(m);
     if (s->param_count > 0) {
-        s->param_binds = calloc((size_t)s->param_count, sizeof(MYSQL_BIND));
-        s->param_slots = calloc((size_t)s->param_count, sizeof(SeekdbParamSlot));
-        if (!s->param_binds || !s->param_slots) {
+        s->param_binds     = calloc((size_t)s->param_count, sizeof(MYSQL_BIND));
+        s->param_int64_buf = calloc((size_t)s->param_count, sizeof(int64_t));
+        if (!s->param_binds || !s->param_int64_buf) {
             free(s->param_binds);
-            free(s->param_slots);
+            free(s->param_int64_buf);
             free(s);
             mysql_stmt_close(m);
             return SEEKDB_INTERNAL_ERROR;
@@ -331,11 +320,8 @@ int seekdb_stmt_free(SeekdbStmt stmt)
     if (!stmt) return SEEKDB_INVALID_ARGUMENT;
     SeekdbStmtImpl *s = stmt;
     if (s->stmt) mysql_stmt_close(s->stmt);
-    if (s->param_slots) {
-        for (int i = 0; i < s->param_count; i++) slot_free(&s->param_slots[i]);
-        free(s->param_slots);
-    }
     free(s->param_binds);
+    free(s->param_int64_buf);
     free(s);
     return SEEKDB_SUCCESS;
 }
@@ -350,10 +336,6 @@ int seekdb_stmt_clear_bindings(SeekdbStmt stmt)
 {
     if (!stmt) return SEEKDB_INVALID_ARGUMENT;
     SeekdbStmtImpl *s = stmt;
-    if (s->param_slots && s->param_count > 0) {
-        for (int i = 0; i < s->param_count; i++) slot_free(&s->param_slots[i]);
-        memset(s->param_slots, 0, (size_t)s->param_count * sizeof(SeekdbParamSlot));
-    }
     if (s->param_binds && s->param_count > 0)
         memset(s->param_binds, 0, (size_t)s->param_count * sizeof(MYSQL_BIND));
     s->bound = 0;
@@ -366,86 +348,13 @@ int seekdb_stmt_bind_int64(SeekdbStmt stmt, int64_t index, int64_t value)
     SeekdbStmtImpl *s = stmt;
     if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
 
-    SeekdbParamSlot *slot = &s->param_slots[index];
-    slot_free(slot);
-    slot->type  = SEEKDB_TYPE_INT64;
-    slot->v.i64 = value;
+    s->param_int64_buf[index] = value;
 
     MYSQL_BIND *b = &s->param_binds[index];
     memset(b, 0, sizeof(*b));
     b->buffer_type = MYSQL_TYPE_LONGLONG;
-    b->buffer      = &slot->v.i64;
+    b->buffer      = &s->param_int64_buf[index];
     b->is_unsigned = 0;
-
-    s->bound = 0;
-    return SEEKDB_SUCCESS;
-}
-
-int seekdb_stmt_bind_float(SeekdbStmt stmt, int64_t index, double value)
-{
-    if (!stmt) return SEEKDB_INVALID_ARGUMENT;
-    SeekdbStmtImpl *s = stmt;
-    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
-
-    SeekdbParamSlot *slot = &s->param_slots[index];
-    slot_free(slot);
-    slot->type  = SEEKDB_TYPE_FLOAT;
-    slot->v.f64 = value;
-
-    MYSQL_BIND *b = &s->param_binds[index];
-    memset(b, 0, sizeof(*b));
-    b->buffer_type = MYSQL_TYPE_DOUBLE;
-    b->buffer      = &slot->v.f64;
-
-    s->bound = 0;
-    return SEEKDB_SUCCESS;
-}
-
-int seekdb_stmt_bind_str(SeekdbStmt stmt, int64_t index,
-                         const char *data, size_t len)
-{
-    if (!stmt || (!data && len > 0)) return SEEKDB_INVALID_ARGUMENT;
-    SeekdbStmtImpl *s = stmt;
-    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
-
-    char *copy = NULL;
-    if (len > 0) {
-        copy = malloc(len);
-        if (!copy) return SEEKDB_INTERNAL_ERROR;
-        memcpy(copy, data, len);
-    }
-
-    SeekdbParamSlot *slot = &s->param_slots[index];
-    slot_free(slot);
-    slot->type      = SEEKDB_TYPE_VARCHAR;
-    slot->v.str.buf = copy;
-    slot->v.str.len = (unsigned long)len;
-
-    MYSQL_BIND *b = &s->param_binds[index];
-    memset(b, 0, sizeof(*b));
-    b->buffer_type   = MYSQL_TYPE_STRING;
-    b->buffer        = slot->v.str.buf;
-    b->buffer_length = slot->v.str.len;
-    b->length        = &slot->v.str.len;
-
-    s->bound = 0;
-    return SEEKDB_SUCCESS;
-}
-
-int seekdb_stmt_bind_null(SeekdbStmt stmt, int64_t index)
-{
-    if (!stmt) return SEEKDB_INVALID_ARGUMENT;
-    SeekdbStmtImpl *s = stmt;
-    if (index < 0 || index >= s->param_count) return SEEKDB_INVALID_ARGUMENT;
-
-    SeekdbParamSlot *slot = &s->param_slots[index];
-    slot_free(slot);
-    slot->type = SEEKDB_TYPE_NULL;
-
-    MYSQL_BIND *b = &s->param_binds[index];
-    memset(b, 0, sizeof(*b));
-    b->buffer_type   = MYSQL_TYPE_NULL;
-    b->is_null_value = 1;
 
     s->bound = 0;
     return SEEKDB_SUCCESS;
@@ -455,19 +364,8 @@ int seekdb_stmt_bind(SeekdbStmt stmt, int64_t index, SeekdbValue value)
 {
     if (!stmt || !value) return SEEKDB_INVALID_ARGUMENT;
     SeekdbValueImpl *v = value;
-    switch (v->type) {
-        case SEEKDB_TYPE_INT64:
-            return seekdb_stmt_bind_int64(stmt, index, v->v.i64);
-        case SEEKDB_TYPE_FLOAT:
-            return seekdb_stmt_bind_float(stmt, index, v->v.f64);
-        case SEEKDB_TYPE_VARCHAR:
-            return seekdb_stmt_bind_str(stmt, index,
-                                        v->v.str.data, v->v.str.len);
-        case SEEKDB_TYPE_NULL:
-            return seekdb_stmt_bind_null(stmt, index);
-        default:
-            return SEEKDB_INVALID_ARGUMENT;
-    }
+    if (v->type != SEEKDB_TYPE_INT64) return SEEKDB_INVALID_ARGUMENT;
+    return seekdb_stmt_bind_int64(stmt, index, v->v.i64);
 }
 
 static int stmt_setup_result(SeekdbStmtImpl *s, SeekdbResultImpl *r)

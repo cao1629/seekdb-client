@@ -20,26 +20,11 @@ typedef struct {
 } SeekdbConnectionImpl;
 
 typedef struct {
-    SeekdbTypeId type;
-    union {
-        int64_t       i64;
-        uint64_t      u64;
-        double        f64;
-        struct {
-            char         *buf;       /* owned by the slot */
-            unsigned long len;       /* unsigned long so &len is valid
-                                        for MYSQL_BIND.length */
-        } str;
-        MYSQL_TIME    tm;            /* DATE / DATETIME / TIMESTAMP */
-    } v;
-} SeekdbParamSlot;
-
-typedef struct {
-    MYSQL_STMT      *stmt;
-    int              param_count;
-    MYSQL_BIND      *param_binds;
-    SeekdbParamSlot *param_slots;
-    int              bound;
+    MYSQL_STMT  *stmt;
+    int          param_count;
+    MYSQL_BIND  *param_binds;
+    int64_t     *param_int64_buf;
+    int          bound;
 } SeekdbStmtImpl;
 
 typedef struct {
