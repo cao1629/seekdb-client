@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <spawn.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,23 +17,62 @@
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
 
-/* The pid of the server this process last spawned; 0 means "no outstanding
- * spawn." Written by seekdb_open after a successful wait_for_ready, read by
- * the reaper thread. */
-static _Atomic pid_t g_spawned_pid = 0;
+/* Set of server pids this process has spawned and not yet reaped.
+ * A single client process may open multiple seekdb instances (distinct
+ * db-dirs), each spawning its own server, so we need a set rather than a
+ * single slot. Linked list because the expected size is tiny. */
+typedef struct spawned_node {
+    pid_t pid;
+    struct spawned_node *next;
+} spawned_node;
 
-/* Background thread that waitpids the spawned server once it exits,
+static pthread_mutex_t g_spawned_mu = PTHREAD_MUTEX_INITIALIZER;
+static spawned_node   *g_spawned_head = NULL;
+
+static void spawned_add(pid_t pid)
+{
+    spawned_node *n = malloc(sizeof(*n));
+    if (!n) return;
+    n->pid = pid;
+    pthread_mutex_lock(&g_spawned_mu);
+    n->next = g_spawned_head;
+    g_spawned_head = n;
+    pthread_mutex_unlock(&g_spawned_mu);
+}
+
+/* Remove the first entry matching pid. Caller holds g_spawned_mu. */
+static void spawned_remove_locked(pid_t pid)
+{
+    spawned_node **pp = &g_spawned_head;
+    while (*pp) {
+        if ((*pp)->pid == pid) {
+            spawned_node *dead = *pp;
+            *pp = dead->next;
+            free(dead);
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+}
+
+/* Background thread that waitpids each spawned server once it exits,
  * preventing zombies. Started lazily on the first successful spawn. */
 static void *reaper_thread(void *unused)
 {
     (void)unused;
     for (;;) {
-        pid_t pid = atomic_load(&g_spawned_pid);
-        if (pid > 0) {
-            if (waitpid(pid, NULL, WNOHANG) == pid) {
-                atomic_store(&g_spawned_pid, 0);
+        pthread_mutex_lock(&g_spawned_mu);
+        spawned_node **pp = &g_spawned_head;
+        while (*pp) {
+            spawned_node *n = *pp;
+            if (waitpid(n->pid, NULL, WNOHANG) == n->pid) {
+                *pp = n->next;
+                free(n);
+            } else {
+                pp = &n->next;
             }
         }
+        pthread_mutex_unlock(&g_spawned_mu);
         usleep(REAPER_INTERVAL_US);
     }
     return NULL;
@@ -157,9 +195,10 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
 
-    /* Publish the spawned pid so the background reaper can waitpid it
+    /* Record the spawned pid so the background reaper can waitpid it
      * once the server exits. Start the reaper lazily. */
-    atomic_store(&g_spawned_pid, pid);
+    h->spawned_pid = pid;
+    spawned_add(pid);
     pthread_once(&reaper_once, start_reaper);
 
     *out_handle = (SeekdbHandle)h;
@@ -174,6 +213,17 @@ int seekdb_close(SeekdbHandle handle)
     if (h->clients_lock_fd >= 0) {
         flock(h->clients_lock_fd, LOCK_UN);
         close(h->clients_lock_fd);
+    }
+
+    /* Opportunistic reap: if the server we spawned has already exited,
+     * clear it from the set now rather than waiting for the reaper's next
+     * tick. If it's still alive, leave it for the reaper. */
+    if (h->spawned_pid > 0) {
+        pthread_mutex_lock(&g_spawned_mu);
+        if (waitpid(h->spawned_pid, NULL, WNOHANG) == h->spawned_pid) {
+            spawned_remove_locked(h->spawned_pid);
+        }
+        pthread_mutex_unlock(&g_spawned_mu);
     }
 
     xfree(h->db_dir);

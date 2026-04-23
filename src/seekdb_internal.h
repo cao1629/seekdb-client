@@ -13,6 +13,7 @@ typedef struct {
     char    clients_lock_path[256];
     char    startup_lock_path[256];
     int     clients_lock_fd;
+    pid_t   spawned_pid;   /* 0 if this handle didn't spawn a server */
 } SeekdbHandleImpl;
 
 typedef struct {
