@@ -1,12 +1,13 @@
-// Two scenarios for a second client arriving while a first is open:
+// Two-client lifecycle scenarios in a single test process (each client is
+// a thread):
 //
-//   BArrivesDuringAStartup -- B arrives while A still holds seekdb.startup.
-//     Both clients race on that lock; A wins and spawns S1, B then spawns
-//     S2 which loses the seekdb.pid race and _exit(0)s. Survivor is A's S1.
-//
-//   BArrivesAfterAStartup -- B arrives after A's seekdb_open returns.
-//     A's server is already up, so B's try_connect succeeds immediately;
-//     B never reaches seekdb.startup or posix_spawn at all.
+//   TwoConcurrentClients     both clients call seekdb_open at the same
+//                            time; the startup-race winner spawns, the
+//                            loser reconnects or takes the fast path.
+//   BArrivesAfterAStartup    B opens after A's seekdb_open returns, so
+//                            B takes the "server already up" fast path.
+//   ClientBSeesClientAWrite  A writes a row through its connection; B
+//                            reads it back through its own connection.
 //
 // Env:
 //   SEEKDB_BIN   path to the seekdb binary
@@ -56,12 +57,12 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
-// Case 1: two clients call seekdb_open concurrently. Whichever wins the
+// Two clients call seekdb_open concurrently. Whichever wins the
 // seekdb.startup race spawns the server; the other takes the fast path
 // (or loses the seekdb.pid race and reconnects). Both seekdb_open calls
 // must return SEEKDB_SUCCESS.
 // ---------------------------------------------------------------------------
-TEST_F(TwoClientsOpen, BArrivesDuringAStartup)
+TEST_F(TwoClientsOpen, TwoConcurrentClients)
 {
     std::mutex m;
     std::condition_variable cv;
