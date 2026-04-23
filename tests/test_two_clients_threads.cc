@@ -243,4 +243,108 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
         << "server " << server_pid << " still alive 15s after both clients closed";
 }
 
+// Cross-client visibility: thread A writes a row, thread B reads it back
+// through its own connection. Both threads live in the test process; each
+// holds its own SeekdbHandle, and the test orchestrates the order of the
+// writes and the read via a single mutex + cv.
+TEST_F(TwoClientsOpen, ClientBSeesClientAWrite)
+{
+    std::mutex m;
+    std::condition_variable cv;
+    bool a_opened = false, b_opened = false;
+    bool a_write_go = false, a_write_done = false;
+    bool b_query_go = false, b_query_done = false;
+    bool close_signal = false;
+
+    int a_open_rc = -1, a_write_rc = -1;
+    int b_open_rc = -1, b_query_rc = -1;
+    int64_t b_seen_value = 0;
+
+    auto run_a = [&]() {
+        SeekdbHandle h = nullptr;
+        a_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        { std::lock_guard<std::mutex> lk(m); a_opened = true; }
+        cv.notify_all();
+        if (a_open_rc != SEEKDB_SUCCESS) { if (h) seekdb_close(h); return; }
+
+        { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return a_write_go; }); }
+
+        SeekdbConnection c = nullptr;
+        a_write_rc = seekdb_connect(h, nullptr, true, &c);
+        if (a_write_rc == SEEKDB_SUCCESS) {
+            SeekdbResult r = nullptr;
+            a_write_rc = seekdb_query(c, "USE test", 8, &r);
+            if (r) { seekdb_result_free(r); r = nullptr; }
+            if (a_write_rc == SEEKDB_SUCCESS)
+                a_write_rc = seekdb_query(c, "CREATE TABLE t1(v int)", 22, &r);
+            if (r) { seekdb_result_free(r); r = nullptr; }
+            if (a_write_rc == SEEKDB_SUCCESS)
+                a_write_rc = seekdb_query(c, "INSERT INTO t1 VALUES (1)", 25, &r);
+            if (r) { seekdb_result_free(r); r = nullptr; }
+            seekdb_disconnect(c);
+        }
+
+        { std::lock_guard<std::mutex> lk(m); a_write_done = true; }
+        cv.notify_all();
+
+        { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return close_signal; }); }
+        seekdb_close(h);
+    };
+
+    auto run_b = [&]() {
+        SeekdbHandle h = nullptr;
+        b_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        { std::lock_guard<std::mutex> lk(m); b_opened = true; }
+        cv.notify_all();
+        if (b_open_rc != SEEKDB_SUCCESS) { if (h) seekdb_close(h); return; }
+
+        { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return b_query_go; }); }
+
+        SeekdbConnection c = nullptr;
+        b_query_rc = seekdb_connect(h, nullptr, true, &c);
+        if (b_query_rc == SEEKDB_SUCCESS) {
+            SeekdbResult r = nullptr;
+            b_query_rc = seekdb_query(c, "SELECT * FROM test.t1", 21, &r);
+            if (b_query_rc == SEEKDB_SUCCESS) {
+                if (seekdb_result_next(r) != SEEKDB_SUCCESS)
+                    b_query_rc = SEEKDB_INTERNAL_ERROR;
+                else if (seekdb_result_get_int64(r, 0, &b_seen_value) != SEEKDB_SUCCESS)
+                    b_query_rc = SEEKDB_INTERNAL_ERROR;
+            }
+            if (r) seekdb_result_free(r);
+            seekdb_disconnect(c);
+        }
+
+        { std::lock_guard<std::mutex> lk(m); b_query_done = true; }
+        cv.notify_all();
+
+        { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return close_signal; }); }
+        seekdb_close(h);
+    };
+
+    std::thread ta(run_a);
+    std::thread tb(run_b);
+
+    { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return a_opened && b_opened; }); }
+    ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
+    ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS);
+
+    { std::lock_guard<std::mutex> lk(m); a_write_go = true; }
+    cv.notify_all();
+    { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return a_write_done; }); }
+    ASSERT_EQ(a_write_rc, SEEKDB_SUCCESS)
+        << "A's USE/CREATE/INSERT sequence failed";
+
+    { std::lock_guard<std::mutex> lk(m); b_query_go = true; }
+    cv.notify_all();
+    { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return b_query_done; }); }
+    ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS) << "B's SELECT failed";
+    EXPECT_EQ(b_seen_value, 1) << "B did not read the row A inserted";
+
+    { std::lock_guard<std::mutex> lk(m); close_signal = true; }
+    cv.notify_all();
+    ta.join();
+    tb.join();
+}
+
 }  // namespace

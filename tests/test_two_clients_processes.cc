@@ -81,8 +81,6 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
     //   open_done   B→parent: B's seekdb_open succeeded
     //   run_query   parent→B: parent wants B to run SELECT 1 now
     //   query_done  B→parent: B's SELECT 1 succeeded
-    // Because A's server is already up, B's seekdb_open takes the fast path
-    // (try_connect succeeds) and never spawns a server.
     int open_done[2];
     int run_query[2];
     int query_done[2];
