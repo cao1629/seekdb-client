@@ -77,22 +77,38 @@ TEST_F(OneClientProcess, ServerShutdownAfterClientClose)
 
 TEST_F(OneClientProcess, ServerShutdownAfterClientExit)
 {
-    Client c = fork_client(bin_path_, db_dir_);
+    int ready[2];
+    ASSERT_EQ(::pipe(ready), 0);
 
-    // Wait for child to report open+query succeeded.
+    pid_t child_pid = ::fork();
+    ASSERT_GE(child_pid, 0);
+    if (child_pid == 0) {
+        ::close(ready[0]);
+
+        SeekdbHandle h = nullptr;
+        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h)
+            != SEEKDB_SUCCESS) _exit(10);
+
+        char byte = 'Y';
+        if (::write(ready[1], &byte, 1) != 1) _exit(13);
+        ::close(ready[1]);
+
+        // Wait to be killed. We intentionally never reach seekdb_close.
+        for (;;) ::pause();
+    }
+    ::close(ready[1]);
+
     char buf;
-    ASSERT_EQ(::read(c.parent_wait, &buf, 1), 1) << "client died before open";
+    ASSERT_EQ(::read(ready[0], &buf, 1), 1) << "client died before open";
 
     const pid_t server_pid = read_pid(db_dir_);
     EXPECT_TRUE(alive(server_pid));
 
     // Kill the client before it can reach seekdb_close. The SH lock on
     // seekdb.clients is OFD-scoped, so it's released when the process dies.
-    ASSERT_EQ(::kill(c.pid, SIGKILL), 0);
-
-    ASSERT_EQ(::waitpid(c.pid, NULL, 0), c.pid);
-    ::close(c.parent_wait);
-    ::close(c.child_wait);
+    ASSERT_EQ(::kill(child_pid, SIGKILL), 0);
+    ASSERT_EQ(::waitpid(child_pid, NULL, 0), child_pid);
+    ::close(ready[0]);
 
     EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " still alive 15s after client was killed";

@@ -1,10 +1,6 @@
-// Observation helpers and child-process harness shared across tests.
+// Observation helpers shared across seekdb-client tests.
 
 #pragma once
-
-#include "seekdb.h"
-
-#include <gtest/gtest.h>
 
 #include <chrono>
 #include <cstdio>
@@ -75,52 +71,3 @@ inline bool someone_holds_flock(const std::string &path,
     return found;
 }
 
-struct Client {
-    pid_t pid;
-    int   parent_wait;   // parent blocks reading here; child writes to unblock it
-    int   child_wait;    // parent close()s here to unblock child's read
-};
-
-// Fork a client child. The child opens seekdb at db_dir (spawning the server
-// via bin_path if needed), runs SELECT 1, writes one byte to unblock the
-// parent, blocks waiting for the parent to release it, then closes and
-// exits(0). Any failure in the open/query phase exits with a nonzero status.
-inline Client fork_client(const std::string &bin_path,
-                          const std::string &db_dir)
-{
-    int parent_wait[2] = {-1, -1};   // blocks parent until child writes
-    int child_wait[2]  = {-1, -1};   // blocks child until parent closes
-    EXPECT_EQ(::pipe(parent_wait), 0);
-    EXPECT_EQ(::pipe(child_wait),  0);
-
-    pid_t pid = ::fork();
-    if (pid == 0) {
-        ::close(parent_wait[0]);
-        ::close(child_wait[1]);
-
-        SeekdbHandle h = nullptr;
-        SeekdbConnection c = nullptr;
-        if (seekdb_open(bin_path.c_str(), db_dir.c_str(), 0, &h)
-            != SEEKDB_SUCCESS) _exit(10);
-        if (seekdb_connect(h, nullptr, true, &c) != SEEKDB_SUCCESS) _exit(11);
-        SeekdbResult r = nullptr;
-        if (seekdb_query(c, "SELECT 1", 8, &r) != SEEKDB_SUCCESS) _exit(12);
-        if (r) seekdb_result_free(r);
-
-        char byte = 'Y';
-        if (::write(parent_wait[1], &byte, 1) != 1) _exit(13);
-        ::close(parent_wait[1]);
-
-        char buf;
-        ::read(child_wait[0], &buf, 1);  // returns 0 when parent closes its end
-        ::close(child_wait[0]);
-
-        seekdb_disconnect(c);
-        seekdb_close(h);
-        _exit(0);
-    }
-
-    ::close(parent_wait[1]);
-    ::close(child_wait[0]);
-    return Client{pid, parent_wait[0], child_wait[1]};
-}
