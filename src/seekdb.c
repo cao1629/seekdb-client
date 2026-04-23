@@ -2,8 +2,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
+#include <pthread.h>
 #include <spawn.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,39 @@
 #include <mysql.h>
 
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
+#define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
+
+/* The pid of the server this process last spawned; 0 means "no outstanding
+ * spawn." Written by seekdb_open after a successful wait_for_ready, read by
+ * the reaper thread. */
+static _Atomic pid_t g_spawned_pid = 0;
+
+/* Background thread that waitpids the spawned server once it exits,
+ * preventing zombies. Started lazily on the first successful spawn. */
+static void *reaper_thread(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        pid_t pid = atomic_load(&g_spawned_pid);
+        if (pid > 0) {
+            if (waitpid(pid, NULL, WNOHANG) == pid) {
+                atomic_store(&g_spawned_pid, 0);
+            }
+        }
+        usleep(REAPER_INTERVAL_US);
+    }
+    return NULL;
+}
+
+static pthread_once_t reaper_once = PTHREAD_ONCE_INIT;
+
+static void start_reaper(void)
+{
+    pthread_t t;
+    if (pthread_create(&t, NULL, reaper_thread, NULL) == 0) {
+        pthread_detach(t);
+    }
+}
 
 static char *xstrdup(const char *s) { return s ? strdup(s) : NULL; }
 static void  xfree(void *p) { if (p) free(p); }
@@ -41,11 +75,8 @@ static int wait_for_ready(SeekdbHandleImpl *h, pid_t spawned_server_pid)
     for (;;) {
         if (try_connect(h)) return 0;
 
-        /* Our spawned server died before becoming ready. With SIGCHLD = SIG_IGN
-         * set below, the kernel auto-reaps, so waitpid returns -1 ECHILD when
-         * the child is gone. Without auto-reap, waitpid returns the pid. */
-        pid_t r = waitpid(spawned_server_pid, NULL, WNOHANG);
-        if (r == spawned_server_pid || (r == -1 && errno == ECHILD)) {
+        /* Our spawned server died before becoming ready — stop waiting. */
+        if (waitpid(spawned_server_pid, NULL, WNOHANG) == spawned_server_pid) {
             return -1;
         }
 
@@ -98,10 +129,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
     flock(startup_lock_fd, LOCK_EX);                 /* blocks if a peer is spawning */
 
-    /* Ask the kernel to auto-reap any of our children so we don't leave a
-     * zombie when the server exits. Idempotent; safe to call on every open. */
-    signal(SIGCHLD, SIG_IGN);
-
     pid_t pid;
     char base_dir_arg[512];
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
@@ -129,6 +156,11 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
+
+    /* Publish the spawned pid so the background reaper can waitpid it
+     * once the server exits. Start the reaper lazily. */
+    atomic_store(&g_spawned_pid, pid);
+    pthread_once(&reaper_once, start_reaper);
 
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
