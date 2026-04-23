@@ -89,6 +89,14 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
 
     ta.join();
     tb.join();
+
+    // Kill the spawned server so it doesn't linger into TearDown (or the
+    // next iteration when this test is run in a loop).
+    pid_t server_pid = read_pid(db_dir_);
+    if (server_pid > 0 && alive(server_pid)) {
+        ::kill(server_pid, SIGKILL);
+        wait_until_gone(server_pid, 5s);
+    }
 }
 
 // ---------------------------------------------------------------------------
