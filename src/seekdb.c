@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +41,11 @@ static int wait_for_ready(SeekdbHandleImpl *h, pid_t spawned_server_pid)
     for (;;) {
         if (try_connect(h)) return 0;
 
-        /* Our spawned server died before becoming ready — stop waiting. */
-        if (waitpid(spawned_server_pid, NULL, WNOHANG) == spawned_server_pid) {
+        /* Our spawned server died before becoming ready. With SIGCHLD = SIG_IGN
+         * set below, the kernel auto-reaps, so waitpid returns -1 ECHILD when
+         * the child is gone. Without auto-reap, waitpid returns the pid. */
+        pid_t r = waitpid(spawned_server_pid, NULL, WNOHANG);
+        if (r == spawned_server_pid || (r == -1 && errno == ECHILD)) {
             return -1;
         }
 
@@ -70,7 +74,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
     mkdir(run_dir, 0755);
 
-
     h->clients_lock_fd = open(h->clients_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (h->clients_lock_fd < 0) {
         xfree(h->db_dir);
@@ -94,6 +97,10 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
     flock(startup_lock_fd, LOCK_EX);                 /* blocks if a peer is spawning */
+
+    /* Ask the kernel to auto-reap any of our children so we don't leave a
+     * zombie when the server exits. Idempotent; safe to call on every open. */
+    signal(SIGCHLD, SIG_IGN);
 
     pid_t pid;
     char base_dir_arg[512];
