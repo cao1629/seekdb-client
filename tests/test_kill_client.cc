@@ -61,7 +61,7 @@ protected:
     void TearDown() override {
         pid_t pid = read_pid();
         if (pid > 0 && alive(pid)) {
-            wait_until_dead(pid, 5s);
+            wait_until_gone(pid, 5s);
             if (alive(pid)) ::kill(pid, SIGKILL);
         }
         fs::remove_all(db_dir_);
@@ -80,8 +80,8 @@ protected:
         return pid > 0 && ::kill(pid, 0) == 0;
     }
 
-    static bool wait_until_dead(pid_t pid, std::chrono::milliseconds budget) {
-        const auto deadline = std::chrono::steady_clock::now() + budget;
+    static bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (alive(pid) && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(200ms);
         }
@@ -153,7 +153,7 @@ TEST_F(KillClientTest, SingleClientSigkillTriggersAutoShutdown)
 
     // The server's poll should detect no clients within ~one tick (~5s)
     // and exit. Generous deadline for headroom.
-    EXPECT_TRUE(wait_until_dead(server_pid, 15s))
+    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " did not exit 15s after SIGKILL'ing its client";
 
     // After the server exits, seekdb.clients EX must be acquirable.
@@ -209,7 +209,7 @@ TEST_F(KillClientTest, PartialKillLeavesServerUpAndFullKillShutsItDown)
     ASSERT_EQ(waitpid(kids.back(), &status, 0), kids.back());
     EXPECT_TRUE(WIFSIGNALED(status));
 
-    EXPECT_TRUE(wait_until_dead(server_pid, 15s))
+    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " did not exit after the last client was killed";
 
     EXPECT_TRUE(ex_lock_available(db_dir_ + "/run/seekdb.clients"));

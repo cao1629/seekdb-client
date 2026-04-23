@@ -104,9 +104,9 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
-add_executable(test_spawn_race tests/test_spawn_race.cc)
-target_link_libraries(test_spawn_race PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_spawn_race)
+add_executable(test_two_clients_open tests/test_two_clients_open.cc)
+target_link_libraries(test_two_clients_open PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_two_clients_open)
 
 add_executable(test_first_open tests/test_first_open.cc)
 target_link_libraries(test_first_open PRIVATE seekdb_client GTest::gtest_main)

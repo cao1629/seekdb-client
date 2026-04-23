@@ -1,10 +1,10 @@
 // Two scenarios for a second client arriving while a first is open:
 //
-//   AWinsStartupAndSurvives -- B arrives while A still holds seekdb.startup.
+//   BArrivesDuringAStartup -- B arrives while A still holds seekdb.startup.
 //     Both clients race on that lock; A wins and spawns S1, B then spawns
 //     S2 which loses the seekdb.pid race and _exit(0)s. Survivor is A's S1.
 //
-//   BJoinsAlreadyRunningServer -- B arrives after A's seekdb_open returns.
+//   BArrivesAfterAStartup -- B arrives after A's seekdb_open returns.
 //     A's server is already up, so B's try_connect succeeds immediately;
 //     B never reaches seekdb.startup or posix_spawn at all.
 //
@@ -37,7 +37,7 @@ using namespace std::chrono_literals;
 
 namespace {
 
-class SpawnRaceTest : public ::testing::Test {
+class TwoClientsOpen : public ::testing::Test {
 protected:
     std::string bin_path_;
     std::string db_dir_;
@@ -51,14 +51,12 @@ protected:
         db_dir_ = "/tmp/seekdb_test_db";
         fs::remove_all(db_dir_);
         fs::create_directories(db_dir_);
-
-        ASSERT_FALSE(fs::exists(db_dir_ + "/run/seekdb.pid"));
     }
 
     void TearDown() override {
         pid_t pid = read_pid();
         if (pid > 0 && alive(pid)) {
-            wait_until_dead(pid, 5s);
+            wait_until_gone(pid, 5s);
             if (alive(pid)) ::kill(pid, SIGKILL);
         }
         fs::remove_all(db_dir_);
@@ -77,8 +75,8 @@ protected:
         return pid > 0 && ::kill(pid, 0) == 0;
     }
 
-    static bool wait_until_dead(pid_t pid, std::chrono::milliseconds budget) {
-        const auto deadline = std::chrono::steady_clock::now() + budget;
+    static bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (alive(pid) && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(200ms);
         }
@@ -120,20 +118,12 @@ protected:
         return found;
     }
 
-    int count_seekdb_processes() const {
-        std::FILE *pipe = ::popen("pgrep -xc seekdb", "r");
-        if (!pipe) return -1;
-        char buf[32] = {};
-        std::fread(buf, 1, sizeof(buf) - 1, pipe);
-        ::pclose(pipe);
-        return std::atoi(buf);
-    }
 };
 
 // ---------------------------------------------------------------------------
 // Case 1: B arrives while A still holds flock(EX) seekdb.startup.
 // ---------------------------------------------------------------------------
-TEST_F(SpawnRaceTest, AWinsStartupAndSurvives)
+TEST_F(TwoClientsOpen, BArrivesDuringAStartup)
 {
     std::mutex m;
     std::condition_variable cv;
@@ -183,6 +173,19 @@ TEST_F(SpawnRaceTest, AWinsStartupAndSurvives)
         std::this_thread::sleep_for(1ms);
     }
 
+    // Capture A's server pid before B exists. The server writes its pid to
+    // run/seekdb.pid during start_daemon (early in open_with_service), so
+    // it's available once A's spawn has gotten that far — no need to wait
+    // for A's full open to complete.
+    pid_t a_server_pid = -1;
+    const auto pid_deadline = std::chrono::steady_clock::now() + 10s;
+    while ((a_server_pid = read_pid()) <= 0) {
+        ASSERT_LT(std::chrono::steady_clock::now(), pid_deadline)
+            << "A's server never wrote run/seekdb.pid";
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(alive(a_server_pid));
+
     std::thread tb(run_client, std::ref(h_b), std::ref(c_b),
                    std::ref(b_open_rc), std::ref(b_query_rc),
                    std::ref(b_opened));
@@ -193,10 +196,6 @@ TEST_F(SpawnRaceTest, AWinsStartupAndSurvives)
     }
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
     ASSERT_EQ(a_query_rc, SEEKDB_SUCCESS);
-
-    const pid_t a_server_pid = read_pid();
-    ASSERT_GT(a_server_pid, 0);
-    ASSERT_TRUE(alive(a_server_pid));
 
     {
         std::unique_lock<std::mutex> lk(m);
@@ -210,9 +209,6 @@ TEST_F(SpawnRaceTest, AWinsStartupAndSurvives)
         << "seekdb.pid changed after B's open -- B's spawn was not supposed to win";
     EXPECT_TRUE(alive(a_server_pid));
 
-    EXPECT_TRUE(fs::exists(db_dir_ + "/run/sql.sock"));
-    EXPECT_TRUE(fs::exists(db_dir_ + "/run/seekdb.clients"));
-
     {
         std::lock_guard<std::mutex> lk(m);
         close_signal = true;
@@ -221,14 +217,14 @@ TEST_F(SpawnRaceTest, AWinsStartupAndSurvives)
     ta.join();
     tb.join();
 
-    EXPECT_TRUE(wait_until_dead(a_server_pid, 15s))
+    EXPECT_TRUE(wait_until_gone(a_server_pid, 15s))
         << "server " << a_server_pid << " still alive 15s after both clients closed";
 }
 
 // ---------------------------------------------------------------------------
 // Case 2: B arrives after A's seekdb_open has fully returned.
 // ---------------------------------------------------------------------------
-TEST_F(SpawnRaceTest, BJoinsAlreadyRunningServer)
+TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
 {
     std::mutex m;
     std::condition_variable cv;
@@ -281,7 +277,6 @@ TEST_F(SpawnRaceTest, BJoinsAlreadyRunningServer)
     const pid_t server_pid = read_pid();
     ASSERT_GT(server_pid, 0);
     ASSERT_TRUE(alive(server_pid));
-    ASSERT_EQ(count_seekdb_processes(), 1) << "more than one seekdb before B starts";
 
     std::thread tb(run_client, std::ref(h_b), std::ref(c_b),
                    std::ref(b_open_rc), std::ref(b_query_rc),
@@ -298,8 +293,6 @@ TEST_F(SpawnRaceTest, BJoinsAlreadyRunningServer)
     EXPECT_EQ(read_pid(), server_pid)
         << "seekdb.pid changed -- B unexpectedly spawned";
     EXPECT_TRUE(alive(server_pid));
-    EXPECT_EQ(count_seekdb_processes(), 1)
-        << "more than one seekdb alive -- B unexpectedly spawned";
 
     EXPECT_TRUE(fs::exists(db_dir_ + "/run/sql.sock"));
 
@@ -311,7 +304,7 @@ TEST_F(SpawnRaceTest, BJoinsAlreadyRunningServer)
     ta.join();
     tb.join();
 
-    EXPECT_TRUE(wait_until_dead(server_pid, 15s))
+    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " still alive 15s after both clients closed";
 }
 

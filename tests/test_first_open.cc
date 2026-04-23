@@ -53,7 +53,7 @@ protected:
     void TearDown() override {
         pid_t pid = read_pid();
         if (pid > 0 && alive(pid)) {
-            wait_until_dead(pid, 5s);
+            wait_until_gone(pid, 5s);
             if (alive(pid)) ::kill(pid, SIGKILL);
         }
         fs::remove_all(db_dir_);
@@ -72,8 +72,8 @@ protected:
         return pid > 0 && ::kill(pid, 0) == 0;
     }
 
-    static bool wait_until_dead(pid_t pid, std::chrono::milliseconds budget) {
-        const auto deadline = std::chrono::steady_clock::now() + budget;
+    static bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (alive(pid) && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(200ms);
         }
@@ -119,7 +119,7 @@ TEST_F(FirstOpenTest, FreshSpawnSucceedsAndServerAutoShutsDown)
     seekdb_close(h);
 
     // Auto-shutdown: one poll tick (~5s) + generous margin.
-    EXPECT_TRUE(wait_until_dead(server_pid, 15s))
+    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid
         << " still alive 15s after seekdb_close";
 }
