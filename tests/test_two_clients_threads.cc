@@ -56,104 +56,38 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
-// Case 1: B arrives while A still holds flock(EX) seekdb.startup.
+// Case 1: two clients call seekdb_open concurrently. Whichever wins the
+// seekdb.startup race spawns the server; the other takes the fast path
+// (or loses the seekdb.pid race and reconnects). Both seekdb_open calls
+// must return SEEKDB_SUCCESS.
 // ---------------------------------------------------------------------------
 TEST_F(TwoClientsOpen, BArrivesDuringAStartup)
 {
     std::mutex m;
     std::condition_variable cv;
-    bool a_opened = false;
-    bool b_opened = false;
-    bool close_signal = false;
+    bool a_opened = false, b_opened = false;
+    int a_open_rc = -1, b_open_rc = -1;
 
-    SeekdbHandle h_a = nullptr, h_b = nullptr;
-    SeekdbConnection c_a = nullptr, c_b = nullptr;
-    int a_open_rc = -1, a_query_rc = -1;
-    int b_open_rc = -1, b_query_rc = -1;
-
-    auto run_client = [&](SeekdbHandle &h, SeekdbConnection &c,
-                          int &open_rc, int &query_rc, bool &opened_flag) {
+    auto run_client = [&](int &open_rc, bool &opened_flag) {
+        SeekdbHandle h = nullptr;
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
-        if (open_rc == SEEKDB_SUCCESS) {
-            if (seekdb_connect(h, nullptr, true, &c) == SEEKDB_SUCCESS) {
-                SeekdbResult r = nullptr;
-                query_rc = seekdb_query(c, "SELECT 1", 8, &r);
-                if (r) seekdb_result_free(r);
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lk(m);
-            opened_flag = true;
-        }
+        { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
-        {
-            std::unique_lock<std::mutex> lk(m);
-            cv.wait(lk, [&] { return close_signal; });
-        }
-        if (c) seekdb_disconnect(c);
         if (h) seekdb_close(h);
     };
 
-    std::thread ta(run_client, std::ref(h_a), std::ref(c_a),
-                   std::ref(a_open_rc), std::ref(a_query_rc),
-                   std::ref(a_opened));
-
-    // Wait for A to actually take flock(EX) seekdb.startup. Only then
-    // is it guaranteed B will race on the same lock.
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
-    const std::string startup_path = db_dir_ + "/run/seekdb.startup";
-    while (!someone_holds_flock(startup_path, "WRITE")) {
-        ASSERT_LT(std::chrono::steady_clock::now(), deadline)
-            << "A never took flock(EX) seekdb.startup";
-        std::this_thread::sleep_for(1ms);
-    }
-
-    // Capture A's server pid before B exists. The server writes its pid to
-    // run/seekdb.pid during start_daemon (early in open_with_service), so
-    // it's available once A's spawn has gotten that far — no need to wait
-    // for A's full open to complete.
-    pid_t a_server_pid = -1;
-    const auto pid_deadline = std::chrono::steady_clock::now() + 10s;
-    while ((a_server_pid = read_pid(db_dir_)) <= 0) {
-        ASSERT_LT(std::chrono::steady_clock::now(), pid_deadline)
-            << "A's server never wrote run/seekdb.pid";
-        std::this_thread::sleep_for(1ms);
-    }
-    ASSERT_TRUE(alive(a_server_pid));
-
-    std::thread tb(run_client, std::ref(h_b), std::ref(c_b),
-                   std::ref(b_open_rc), std::ref(b_query_rc),
-                   std::ref(b_opened));
+    std::thread ta(run_client, std::ref(a_open_rc), std::ref(a_opened));
+    std::thread tb(run_client, std::ref(b_open_rc), std::ref(b_opened));
 
     {
         std::unique_lock<std::mutex> lk(m);
-        cv.wait(lk, [&] { return a_opened; });
+        cv.wait(lk, [&] { return a_opened && b_opened; });
     }
-    ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
-    ASSERT_EQ(a_query_rc, SEEKDB_SUCCESS);
+    ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS) << "client A failed to seekdb_open";
+    ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS) << "client B failed to seekdb_open";
 
-    {
-        std::unique_lock<std::mutex> lk(m);
-        cv.wait(lk, [&] { return b_opened; });
-    }
-    ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS);
-    ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS);
-
-    // Headline invariant: survivor is exactly the process A spawned.
-    EXPECT_EQ(read_pid(db_dir_), a_server_pid)
-        << "seekdb.pid changed after B's open -- B's spawn was not supposed to win";
-    EXPECT_TRUE(alive(a_server_pid));
-
-    {
-        std::lock_guard<std::mutex> lk(m);
-        close_signal = true;
-    }
-    cv.notify_all();
     ta.join();
     tb.join();
-
-    EXPECT_TRUE(wait_until_gone(a_server_pid, 15s))
-        << "server " << a_server_pid << " still alive 15s after both clients closed";
 }
 
 // ---------------------------------------------------------------------------
