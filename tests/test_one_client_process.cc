@@ -1,13 +1,17 @@
-// One client, in its own forked process: verify that seekdb_open spawns a
-// live server whose pid is recorded in run/seekdb.pid, that a query succeeds,
-// and that once the client closes its handle the server shuts itself down
-// (it's the last client, so seekdb.clients goes fully free).
+// One client, two ways it can go away:
+//   ServerShutdownAfterClientClose — client calls seekdb_close cleanly.
+//     The test process itself is the client.
+//   ServerShutdownAfterClientExit  — client process is killed before close.
+//     A forked child runs as the client; parent SIGKILLs it.
+// In both cases the last-client-gone detection on seekdb.clients should
+// make the server shut itself down.
 //
 // Env:
 //   SEEKDB_BIN   path to the seekdb binary
 
 #include <gtest/gtest.h>
 
+#include "seekdb.h"
 #include "test_utils.h"
 
 #include <chrono>
@@ -49,31 +53,49 @@ protected:
     }
 };
 
-TEST_F(OneClientProcess, ServerShutsDownAfterClose)
+TEST_F(OneClientProcess, ServerShutdownAfterClientClose)
+{
+    SeekdbHandle h = nullptr;
+    ASSERT_EQ(seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h),
+              SEEKDB_SUCCESS);
+
+    const pid_t server_pid = read_pid(db_dir_);
+    EXPECT_TRUE(alive(server_pid));
+
+    SeekdbConnection c = nullptr;
+    ASSERT_EQ(seekdb_connect(h, nullptr, true, &c), SEEKDB_SUCCESS);
+    SeekdbResult r = nullptr;
+    EXPECT_EQ(seekdb_query(c, "SELECT 1", 8, &r), SEEKDB_SUCCESS);
+    if (r) seekdb_result_free(r);
+
+    seekdb_disconnect(c);
+    seekdb_close(h);
+
+    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
+        << "server " << server_pid << " still alive 15s after client closed";
+}
+
+TEST_F(OneClientProcess, ServerShutdownAfterClientExit)
 {
     Client c = fork_client(bin_path_, db_dir_);
 
-    // Block until child reports open + query succeeded.
+    // Wait for child to report open+query succeeded.
     char buf;
-    ASSERT_EQ(::read(c.ready_read, &buf, 1), 1) << "client died before open";
+    ASSERT_EQ(::read(c.parent_wait, &buf, 1), 1) << "client died before open";
 
-    // Server should be alive, and its pid recorded in run/seekdb.pid.
     const pid_t server_pid = read_pid(db_dir_);
-    ASSERT_GT(server_pid, 0) << "server did not record its pid";
     EXPECT_TRUE(alive(server_pid));
 
-    // Tell the child to close its handle and exit.
-    ::close(c.close_write);
+    // Kill the client before it can reach seekdb_close. The SH lock on
+    // seekdb.clients is OFD-scoped, so it's released when the process dies.
+    ASSERT_EQ(::kill(c.pid, SIGKILL), 0);
 
-    int status;
-    ASSERT_EQ(::waitpid(c.pid, &status, 0), c.pid);
-    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0)
-        << "client exit status: " << (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-    ::close(c.ready_read);
+    ASSERT_EQ(::waitpid(c.pid, NULL, 0), c.pid);
+    ::close(c.parent_wait);
+    ::close(c.child_wait);
 
-    // With the last client gone, the server should notice and exit.
     EXPECT_TRUE(wait_until_gone(server_pid, 15s))
-        << "server " << server_pid << " still alive 15s after client closed";
+        << "server " << server_pid << " still alive 15s after client was killed";
 }
 
 }  // namespace

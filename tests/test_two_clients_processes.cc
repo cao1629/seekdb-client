@@ -94,16 +94,16 @@ TEST_F(TwoClientsProcesses, BArrivesDuringAStartup)
     Client b = fork_client(bin_path_, db_dir_);
 
     char buf;
-    ASSERT_EQ(::read(a.ready_read, &buf, 1), 1) << "A child died before open";
-    ASSERT_EQ(::read(b.ready_read, &buf, 1), 1) << "B child died before open";
+    ASSERT_EQ(::read(a.parent_wait, &buf, 1), 1) << "A child died before open";
+    ASSERT_EQ(::read(b.parent_wait, &buf, 1), 1) << "B child died before open";
 
     // Headline invariant: survivor is exactly the process A spawned.
     EXPECT_EQ(read_pid(db_dir_), a_server_pid)
         << "seekdb.pid changed after B's open -- B's spawn was not supposed to win";
     EXPECT_TRUE(alive(a_server_pid));
 
-    ::close(a.close_write);
-    ::close(b.close_write);
+    ::close(a.child_wait);
+    ::close(b.child_wait);
 
     int status;
     ASSERT_EQ(::waitpid(a.pid, &status, 0), a.pid);
@@ -113,8 +113,8 @@ TEST_F(TwoClientsProcesses, BArrivesDuringAStartup)
     EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0)
         << "B child exit status: " << (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 
-    ::close(a.ready_read);
-    ::close(b.ready_read);
+    ::close(a.parent_wait);
+    ::close(b.parent_wait);
 
     EXPECT_TRUE(wait_until_gone(a_server_pid, 15s))
         << "server " << a_server_pid << " still alive 15s after both clients closed";
@@ -128,14 +128,14 @@ TEST_F(TwoClientsProcesses, BArrivesAfterAStartup)
     Client a = fork_client(bin_path_, db_dir_);
 
     char buf;
-    ASSERT_EQ(::read(a.ready_read, &buf, 1), 1) << "A child died before open";
+    ASSERT_EQ(::read(a.parent_wait, &buf, 1), 1) << "A child died before open";
 
     const pid_t server_pid = read_pid(db_dir_);
     ASSERT_GT(server_pid, 0);
     ASSERT_TRUE(alive(server_pid));
 
     Client b = fork_client(bin_path_, db_dir_);
-    ASSERT_EQ(::read(b.ready_read, &buf, 1), 1) << "B child died before open";
+    ASSERT_EQ(::read(b.parent_wait, &buf, 1), 1) << "B child died before open";
 
     // Headline invariants: B didn't spawn anything.
     EXPECT_EQ(read_pid(db_dir_), server_pid)
@@ -144,8 +144,8 @@ TEST_F(TwoClientsProcesses, BArrivesAfterAStartup)
 
     EXPECT_TRUE(fs::exists(db_dir_ + "/run/sql.sock"));
 
-    ::close(a.close_write);
-    ::close(b.close_write);
+    ::close(a.child_wait);
+    ::close(b.child_wait);
 
     int status;
     ASSERT_EQ(::waitpid(a.pid, &status, 0), a.pid);
@@ -155,8 +155,8 @@ TEST_F(TwoClientsProcesses, BArrivesAfterAStartup)
     EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0)
         << "B child exit status: " << (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 
-    ::close(a.ready_read);
-    ::close(b.ready_read);
+    ::close(a.parent_wait);
+    ::close(b.parent_wait);
 
     EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " still alive 15s after both clients closed";

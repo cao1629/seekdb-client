@@ -77,27 +77,26 @@ inline bool someone_holds_flock(const std::string &path,
 
 struct Client {
     pid_t pid;
-    int   ready_read;   // parent reads; child writes one byte when open is done
-    int   close_write;  // parent close()s to let child proceed to close + exit
+    int   parent_wait;   // parent blocks reading here; child writes to unblock it
+    int   child_wait;    // parent close()s here to unblock child's read
 };
 
 // Fork a client child. The child opens seekdb at db_dir (spawning the server
-// via bin_path if needed), runs SELECT 1, writes one byte to the ready pipe,
-// blocks reading the close pipe, then closes and exits(0). Any failure in the
-// open/query phase exits with a nonzero status.
+// via bin_path if needed), runs SELECT 1, writes one byte to unblock the
+// parent, blocks waiting for the parent to release it, then closes and
+// exits(0). Any failure in the open/query phase exits with a nonzero status.
 inline Client fork_client(const std::string &bin_path,
                           const std::string &db_dir)
 {
-    int ready[2]  = {-1, -1};
-    int closep[2] = {-1, -1};
-    EXPECT_EQ(::pipe(ready),  0);
-    EXPECT_EQ(::pipe(closep), 0);
+    int parent_wait[2] = {-1, -1};   // blocks parent until child writes
+    int child_wait[2]  = {-1, -1};   // blocks child until parent closes
+    EXPECT_EQ(::pipe(parent_wait), 0);
+    EXPECT_EQ(::pipe(child_wait),  0);
 
     pid_t pid = ::fork();
-    EXPECT_GE(pid, 0);
     if (pid == 0) {
-        ::close(ready[0]);
-        ::close(closep[1]);
+        ::close(parent_wait[0]);
+        ::close(child_wait[1]);
 
         SeekdbHandle h = nullptr;
         SeekdbConnection c = nullptr;
@@ -109,19 +108,19 @@ inline Client fork_client(const std::string &bin_path,
         if (r) seekdb_result_free(r);
 
         char byte = 'Y';
-        if (::write(ready[1], &byte, 1) != 1) _exit(13);
-        ::close(ready[1]);
+        if (::write(parent_wait[1], &byte, 1) != 1) _exit(13);
+        ::close(parent_wait[1]);
 
         char buf;
-        ::read(closep[0], &buf, 1);  // returns 0 when parent closes its end
-        ::close(closep[0]);
+        ::read(child_wait[0], &buf, 1);  // returns 0 when parent closes its end
+        ::close(child_wait[0]);
 
         seekdb_disconnect(c);
         seekdb_close(h);
         _exit(0);
     }
 
-    ::close(ready[1]);
-    ::close(closep[0]);
-    return Client{pid, ready[0], closep[1]};
+    ::close(parent_wait[1]);
+    ::close(child_wait[0]);
+    return Client{pid, parent_wait[0], child_wait[1]};
 }
