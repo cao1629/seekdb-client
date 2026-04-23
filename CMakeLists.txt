@@ -64,6 +64,9 @@ message(STATUS "libmariadb library: ${MARIADB_LIBRARY}")
 # seekdb_client library
 # ----------------------------------------------------------------------------
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 add_library(seekdb_client
             src/seekdb.c)
 
@@ -73,7 +76,7 @@ target_include_directories(seekdb_client
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${MARIADB_INCLUDE_DIR})
 
-target_link_libraries(seekdb_client PRIVATE ${MARIADB_LIBRARY})
+target_link_libraries(seekdb_client PRIVATE ${MARIADB_LIBRARY} Threads::Threads)
 
 target_compile_options(seekdb_client PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
