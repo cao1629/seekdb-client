@@ -14,23 +14,15 @@
 #include <gtest/gtest.h>
 
 #include "seekdb.h"
+#include "test_utils.h"
 
-#include <cerrno>
 #include <chrono>
 #include <condition_variable>
-#include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <mutex>
-#include <signal.h>
 #include <string>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -54,70 +46,13 @@ protected:
     }
 
     void TearDown() override {
-        pid_t pid = read_pid();
+        pid_t pid = read_pid(db_dir_);
         if (pid > 0 && alive(pid)) {
             wait_until_gone(pid, 5s);
             if (alive(pid)) ::kill(pid, SIGKILL);
         }
         fs::remove_all(db_dir_);
     }
-
-    pid_t read_pid() const {
-        std::FILE *f = std::fopen((db_dir_ + "/run/seekdb.pid").c_str(), "r");
-        if (!f) return -1;
-        long pid = 0;
-        int got = std::fscanf(f, "%ld", &pid);
-        std::fclose(f);
-        return got == 1 ? (pid_t)pid : -1;
-    }
-
-    static bool alive(pid_t pid) {
-        return pid > 0 && ::kill(pid, 0) == 0;
-    }
-
-    static bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (alive(pid) && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(200ms);
-        }
-        return !alive(pid);
-    }
-
-    // Read /proc/locks and look for a FLOCK entry on the given file's inode.
-    // If mode_filter is non-null, only entries with that mode match ("READ" or
-    // "WRITE"); otherwise any FLOCK entry counts. Pure observation, no
-    // interaction with the lock.
-    bool someone_holds_flock(const std::string &path,
-                             const char *mode_filter = nullptr) const {
-        struct stat st;
-        if (::stat(path.c_str(), &st) != 0) return false;
-        const unsigned long want_inode = st.st_ino;
-
-        std::FILE *f = std::fopen("/proc/locks", "r");
-        if (!f) return false;
-
-        char line[256];
-        bool found = false;
-        while (std::fgets(line, sizeof(line), f)) {
-            // Example: "4: FLOCK  ADVISORY  WRITE 12345 103:01:29516501 0 EOF"
-            char type[16] = {}, adv[16] = {}, mode[16] = {};
-            unsigned long pid = 0;
-            unsigned major = 0, minor = 0;
-            unsigned long inode = 0;
-            if (std::sscanf(line, "%*d: %15s %15s %15s %lu %u:%u:%lu",
-                            type, adv, mode, &pid, &major, &minor, &inode) == 7) {
-                if (std::strcmp(type, "FLOCK") == 0 &&
-                    inode == want_inode &&
-                    (mode_filter == nullptr || std::strcmp(mode, mode_filter) == 0)) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        std::fclose(f);
-        return found;
-    }
-
 };
 
 // ---------------------------------------------------------------------------
@@ -179,7 +114,7 @@ TEST_F(TwoClientsOpen, BArrivesDuringAStartup)
     // for A's full open to complete.
     pid_t a_server_pid = -1;
     const auto pid_deadline = std::chrono::steady_clock::now() + 10s;
-    while ((a_server_pid = read_pid()) <= 0) {
+    while ((a_server_pid = read_pid(db_dir_)) <= 0) {
         ASSERT_LT(std::chrono::steady_clock::now(), pid_deadline)
             << "A's server never wrote run/seekdb.pid";
         std::this_thread::sleep_for(1ms);
@@ -205,7 +140,7 @@ TEST_F(TwoClientsOpen, BArrivesDuringAStartup)
     ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS);
 
     // Headline invariant: survivor is exactly the process A spawned.
-    EXPECT_EQ(read_pid(), a_server_pid)
+    EXPECT_EQ(read_pid(db_dir_), a_server_pid)
         << "seekdb.pid changed after B's open -- B's spawn was not supposed to win";
     EXPECT_TRUE(alive(a_server_pid));
 
@@ -274,7 +209,7 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
     ASSERT_EQ(a_query_rc, SEEKDB_SUCCESS);
 
-    const pid_t server_pid = read_pid();
+    const pid_t server_pid = read_pid(db_dir_);
     ASSERT_GT(server_pid, 0);
     ASSERT_TRUE(alive(server_pid));
 
@@ -290,7 +225,7 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS);
 
     // Headline invariants: B didn't spawn anything.
-    EXPECT_EQ(read_pid(), server_pid)
+    EXPECT_EQ(read_pid(db_dir_), server_pid)
         << "seekdb.pid changed -- B unexpectedly spawned";
     EXPECT_TRUE(alive(server_pid));
 

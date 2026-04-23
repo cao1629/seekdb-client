@@ -104,17 +104,17 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
-add_executable(test_two_clients_open tests/test_two_clients_open.cc)
-target_link_libraries(test_two_clients_open PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_two_clients_open)
+add_executable(test_one_client_process tests/test_one_client_process.cc)
+target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_one_client_process)
 
-add_executable(test_first_open tests/test_first_open.cc)
-target_link_libraries(test_first_open PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_first_open)
+add_executable(test_two_clients_threads tests/test_two_clients_threads.cc)
+target_link_libraries(test_two_clients_threads PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_two_clients_threads)
 
-add_executable(test_kill_client tests/test_kill_client.cc)
-target_link_libraries(test_kill_client PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_kill_client)
+add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
+target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_two_clients_processes)
 
 find_library(READLINE_LIBRARY readline
     HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
