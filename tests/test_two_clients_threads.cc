@@ -42,6 +42,18 @@ protected:
         ASSERT_TRUE(fs::exists(bin_path_));
 
         db_dir_ = "/tmp/seekdb_test_db";
+
+        // Kill any leftover daemon from a prior run that didn't run TearDown
+        // (crash, Ctrl+C, etc.) before removing the dir — otherwise the
+        // leftover process keeps the socket/lock fds open and the fresh test
+        // races with it.
+        pid_t pid = read_pid(db_dir_);
+        if (pid > 0 && alive(pid)) {
+            ::kill(pid, SIGTERM);
+            wait_until_gone(pid, 5s);
+            if (alive(pid)) ::kill(pid, SIGKILL);
+        }
+
         fs::remove_all(db_dir_);
         fs::create_directories(db_dir_);
     }
