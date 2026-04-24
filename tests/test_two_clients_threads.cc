@@ -43,17 +43,6 @@ protected:
 
         db_dir_ = "/tmp/seekdb_test_db";
 
-        // Kill any leftover daemon from a prior run that didn't run TearDown
-        // (crash, Ctrl+C, etc.) before removing the dir — otherwise the
-        // leftover process keeps the socket/lock fds open and the fresh test
-        // races with it.
-        pid_t pid = read_pid(db_dir_);
-        if (pid > 0 && alive(pid)) {
-            ::kill(pid, SIGTERM);
-            wait_until_gone(pid, 5s);
-            if (alive(pid)) ::kill(pid, SIGKILL);
-        }
-
         fs::remove_all(db_dir_);
         fs::create_directories(db_dir_);
     }
@@ -61,10 +50,14 @@ protected:
     void TearDown() override {
         pid_t pid = read_pid(db_dir_);
         if (pid > 0 && alive(pid)) {
-            wait_until_gone(pid, 5s);
-            if (alive(pid)) ::kill(pid, SIGKILL);
+            wait_until_gone(pid, 10s);
+            if (alive(pid)) {
+                ::kill(pid, SIGKILL);
+                printf("kill -9 server during teardown\n");
+            } 
+        } else {
+            printf("pid = %d\n", pid);
         }
-        fs::remove_all(db_dir_);
     }
 };
 
@@ -86,7 +79,6 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
-        if (h) seekdb_close(h);
     };
 
     std::thread ta(run_client, std::ref(a_open_rc), std::ref(a_opened));
@@ -105,9 +97,11 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     // Kill the spawned server so it doesn't linger into TearDown (or the
     // next iteration when this test is run in a loop).
     pid_t server_pid = read_pid(db_dir_);
+    printf("read_pid = %d\n", server_pid);
     if (server_pid > 0 && alive(server_pid)) {
         ::kill(server_pid, SIGKILL);
-        wait_until_gone(server_pid, 5s);
+        int rc = wait_until_gone(server_pid, 10s);
+        printf("wait_until_gone = %d\n", rc);
     }
 }
 

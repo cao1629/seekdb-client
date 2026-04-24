@@ -98,8 +98,11 @@ static int wait_for_ready(SeekdbHandleImpl *h, pid_t spawned_server_pid)
     for (;;) {
         if (try_connect(h)) return 0;
 
+        printf("cannot connect\n");
+
         /* Our spawned server died before becoming ready — stop waiting. */
         if (waitpid(spawned_server_pid, NULL, WNOHANG) == spawned_server_pid) {
+            printf("spawned %d died\n", spawned_server_pid);
             return -1;
         }
 
@@ -151,6 +154,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
     flock(startup_lock_fd, LOCK_EX);                 /* blocks if a peer is spawning */
+    printf("got startup lock\n");
 
     pid_t pid;
     char base_dir_arg[512];
@@ -166,10 +170,12 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
 
+    printf("ready to call wait_for_ready(spawned pid = %d)\n", pid);
     int rc = wait_for_ready(h, pid);
 
     flock(startup_lock_fd, LOCK_UN);
     close(startup_lock_fd);
+    printf("spawned pid = %d, released startup\n", pid);
 
     if (rc < 0) {
         fprintf(stderr, "seekdb: server not ready\n");
