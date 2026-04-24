@@ -19,15 +19,16 @@
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
 
-/* Timestamped debug print. Format: [HH:MM:SS.mmm] ...
+/* Timestamped debug print. Format: [HH:MM:SS.mmm T=<tid>] ...
  * Single printf call so output is atomic per POSIX stream locking. */
 #define tlog(fmt, ...) do { \
     struct timespec _ts; \
     clock_gettime(CLOCK_REALTIME, &_ts); \
     struct tm _tm; \
     localtime_r(&_ts.tv_sec, &_tm); \
-    printf("[%02d:%02d:%02d.%03ld] " fmt, \
+    printf("[%02d:%02d:%02d.%03ld T=%lx] " fmt, \
            _tm.tm_hour, _tm.tm_min, _tm.tm_sec, _ts.tv_nsec / 1000000, \
+           (unsigned long)pthread_self(), \
            ##__VA_ARGS__); \
 } while (0)
 
