@@ -5,12 +5,25 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <signal.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+
+/* Timestamped debug print. Format: [HH:MM:SS.mmm] ...
+ * Single printf call so output is atomic per POSIX stream locking. */
+#define tlog(fmt, ...) do { \
+    struct timespec _ts; \
+    clock_gettime(CLOCK_REALTIME, &_ts); \
+    struct tm _tm; \
+    localtime_r(&_ts.tv_sec, &_tm); \
+    std::printf("[%02d:%02d:%02d.%03ld] " fmt, \
+                _tm.tm_hour, _tm.tm_min, _tm.tm_sec, _ts.tv_nsec / 1000000, \
+                ##__VA_ARGS__); \
+} while (0)
 
 inline pid_t read_pid(const std::string &db_dir)
 {

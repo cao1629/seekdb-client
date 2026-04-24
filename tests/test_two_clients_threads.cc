@@ -53,10 +53,10 @@ protected:
             wait_until_gone(pid, 10s);
             if (alive(pid)) {
                 ::kill(pid, SIGKILL);
-                printf("kill -9 server during teardown\n");
+                tlog("kill -9 server during teardown\n");
             } 
         } else {
-            printf("pid = %d\n", pid);
+            tlog("pid = %d\n", pid);
         }
     }
 };
@@ -78,14 +78,14 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     auto run_client = [&](int &open_rc, bool &opened_flag) {
         SeekdbHandle h = nullptr;
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
-        printf("seekdb_open return %d\n", open_rc);
+        tlog("seekdb_open return %d\n", open_rc);
 
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
 
         if (h) {
             seekdb_close(h);
-            printf("seekdb_close called\n");
+            tlog("seekdb_close called\n");
         }
     };
 
@@ -97,8 +97,8 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
         cv.wait(lk, [&] { return a_opened && b_opened; });
     }
 
-    printf("a rc = %d\n", a_open_rc);
-    printf("b rc = %d\n", b_open_rc);
+    tlog("a rc = %d\n", a_open_rc);
+    tlog("b rc = %d\n", b_open_rc);
 
     if (a_open_rc && !b_open_rc) {
         sleep(10000);
@@ -119,11 +119,11 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     // Kill the spawned server so it doesn't linger into TearDown (or the
     // next iteration when this test is run in a loop).
     pid_t server_pid = read_pid(db_dir_);
-    printf("read_pid = %d\n", server_pid);
+    tlog("read_pid = %d\n", server_pid);
     if (server_pid > 0 && alive(server_pid)) {
         ::kill(server_pid, SIGKILL);
         int rc = wait_until_gone(server_pid, 10s);
-        printf("wait_until_gone = %d\n", rc);
+        tlog("wait_until_gone = %d\n", rc);
     }
 }
 

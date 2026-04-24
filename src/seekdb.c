@@ -11,12 +11,25 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <mysql.h>
 
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
+
+/* Timestamped debug print. Format: [HH:MM:SS.mmm] ...
+ * Single printf call so output is atomic per POSIX stream locking. */
+#define tlog(fmt, ...) do { \
+    struct timespec _ts; \
+    clock_gettime(CLOCK_REALTIME, &_ts); \
+    struct tm _tm; \
+    localtime_r(&_ts.tv_sec, &_tm); \
+    printf("[%02d:%02d:%02d.%03ld] " fmt, \
+           _tm.tm_hour, _tm.tm_min, _tm.tm_sec, _ts.tv_nsec / 1000000, \
+           ##__VA_ARGS__); \
+} while (0)
 
 /* Set of server pids this process has spawned and not yet reaped.
  * A single client process may open multiple seekdb instances (distinct
@@ -91,7 +104,7 @@ static int try_connect(SeekdbHandleImpl *h)
     int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path,
                                 0) != NULL;
     if (!ok) {
-        printf("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
+        tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
     }
     mysql_close(m);
     return ok;
@@ -101,14 +114,14 @@ static int wait_for_ready(SeekdbHandleImpl *h, pid_t spawned_server_pid)
 {
     for (;;) {
         if (try_connect(h)) {
-            printf("wait_for_ready: try_connect succeeded\n");
+            tlog("wait_for_ready: try_connect succeeded\n");
             return 0;
         }
-        printf("wait_for_ready: cannot connect\n");
+        tlog("wait_for_ready: cannot connect\n");
 
         /* Our spawned server died before becoming ready — stop waiting. */
         if (waitpid(spawned_server_pid, NULL, WNOHANG) == spawned_server_pid) {
-            printf("spawned %d died\n", spawned_server_pid);
+            tlog("spawned %d died\n", spawned_server_pid);
             return -1;
         }
 
@@ -145,13 +158,13 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     flock(h->clients_lock_fd, LOCK_SH);
-    printf("got seekdb.clients\n");
+    tlog("got seekdb.clients\n");
 
     if (try_connect(h)) {
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
-    printf("tried to connect after getting client lock, but failed\n");
+    tlog("tried to connect after getting client lock, but failed\n");
 
     int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (startup_lock_fd < 0) {
@@ -162,9 +175,9 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
     if (flock(startup_lock_fd, LOCK_EX) != 0) {      /* blocks if a peer is spawning */
-        printf("flock(startup_lock_fd, LOCK_EX) failed: %s\n", strerror(errno));
+        tlog("flock(startup_lock_fd, LOCK_EX) failed: %s\n", strerror(errno));
     } else {
-        printf("got startup lock\n");
+        tlog("got startup lock\n");
     }
 
     pid_t pid;
@@ -181,12 +194,12 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
 
-    printf("ready to call wait_for_ready(spawned pid = %d)\n", pid);
+    tlog("ready to call wait_for_ready(spawned pid = %d)\n", pid);
     int rc = wait_for_ready(h, pid);
 
     flock(startup_lock_fd, LOCK_UN);
     close(startup_lock_fd);
-    printf("spawned pid = %d, released startup\n", pid);
+    tlog("spawned pid = %d, released startup\n", pid);
 
     if (rc < 0) {
         fprintf(stderr, "seekdb: server not ready\n");
@@ -214,7 +227,7 @@ int seekdb_close(SeekdbHandle handle)
     if (h->clients_lock_fd >= 0) {
         flock(h->clients_lock_fd, LOCK_UN);
         close(h->clients_lock_fd);
-        printf("released seekdb.clients\n");
+        tlog("released seekdb.clients\n");
     }
 
     xfree(h->db_dir);
