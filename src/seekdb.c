@@ -90,6 +90,9 @@ static int try_connect(SeekdbHandleImpl *h)
     if (!m) return 0;
     int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path,
                                 0) != NULL;
+    if (!ok) {
+        printf("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
+    }
     mysql_close(m);
     return ok;
 }
@@ -142,6 +145,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     flock(h->clients_lock_fd, LOCK_SH);
+    printf("got seekdb.clients\n");
 
     if (try_connect(h)) {
         *out_handle = (SeekdbHandle)h;
@@ -210,6 +214,7 @@ int seekdb_close(SeekdbHandle handle)
     if (h->clients_lock_fd >= 0) {
         flock(h->clients_lock_fd, LOCK_UN);
         close(h->clients_lock_fd);
+        printf("released seekdb.clients\n");
     }
 
     xfree(h->db_dir);

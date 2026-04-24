@@ -74,12 +74,15 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     bool a_opened = false, b_opened = false;
     int a_open_rc = -1, b_open_rc = -1;
 
+
     auto run_client = [&](int &open_rc, bool &opened_flag) {
         SeekdbHandle h = nullptr;
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        printf("seekdb_open return %d\n", open_rc);
+
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
-        
+
         if (h) {
             seekdb_close(h);
             printf("seekdb_close called\n");
@@ -93,8 +96,22 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
         std::unique_lock<std::mutex> lk(m);
         cv.wait(lk, [&] { return a_opened && b_opened; });
     }
+
+    printf("a rc = %d\n", a_open_rc);
+    printf("b rc = %d\n", b_open_rc);
+
+    if (a_open_rc && !b_open_rc) {
+        sleep(10000);
+    }
+
+
+    if (b_open_rc && !a_open_rc) {
+        sleep(10000);
+    }
+
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS) << "client A failed to seekdb_open";
     ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS) << "client B failed to seekdb_open";
+
 
     ta.join();
     tb.join();
