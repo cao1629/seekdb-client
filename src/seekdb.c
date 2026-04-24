@@ -157,8 +157,11 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-    flock(startup_lock_fd, LOCK_EX);                 /* blocks if a peer is spawning */
-    printf("got startup lock\n");
+    if (flock(startup_lock_fd, LOCK_EX) != 0) {      /* blocks if a peer is spawning */
+        printf("flock(startup_lock_fd, LOCK_EX) failed: %s\n", strerror(errno));
+    } else {
+        printf("got startup lock\n");
+    }
 
     pid_t pid;
     char base_dir_arg[512];
