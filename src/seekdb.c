@@ -1,3 +1,4 @@
+#include "seekdb.h"
 #include "seekdb_internal.h"
 
 #include <errno.h>
@@ -96,9 +97,11 @@ static int try_connect(SeekdbHandleImpl *h)
 static int wait_for_ready(SeekdbHandleImpl *h, pid_t spawned_server_pid)
 {
     for (;;) {
-        if (try_connect(h)) return 0;
-
-        printf("cannot connect\n");
+        if (try_connect(h)) {
+            printf("wait_for_ready: try_connect succeeded\n");
+            return 0;
+        }
+        printf("wait_for_ready: cannot connect\n");
 
         /* Our spawned server died before becoming ready — stop waiting. */
         if (waitpid(spawned_server_pid, NULL, WNOHANG) == spawned_server_pid) {
@@ -144,6 +147,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
+    printf("tried to connect after getting client lock, but failed\n");
 
     int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (startup_lock_fd < 0) {

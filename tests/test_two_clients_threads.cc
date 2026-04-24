@@ -79,6 +79,11 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
+        
+        if (h) {
+            seekdb_close(h);
+            printf("seekdb_close called\n");
+        }
     };
 
     std::thread ta(run_client, std::ref(a_open_rc), std::ref(a_opened));
