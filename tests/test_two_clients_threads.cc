@@ -83,10 +83,8 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
 
-        if (h) {
-            seekdb_close(h);
-            tlog("seekdb_close called\n");
-        }
+        seekdb_close(h);
+        tlog("seekdb_close called\n");
     };
 
     std::thread ta(run_client, std::ref(a_open_rc), std::ref(a_opened));

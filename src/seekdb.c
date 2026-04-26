@@ -159,7 +159,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     flock(h->clients_lock_fd, LOCK_SH);
-    tlog("got seekdb.clients\n");
+    tlog("got seekdb.clients, seekdb.clients fd = %d\n", h->clients_lock_fd);
 
     if (try_connect(h)) {
         *out_handle = (SeekdbHandle)h;
@@ -169,8 +169,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
     int startup_lock_fd = open(h->startup_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (startup_lock_fd < 0) {
-        flock(h->clients_lock_fd, LOCK_UN);
-        close(h->clients_lock_fd);
+        // flock(h->clients_lock_fd, LOCK_UN);
+        // close(h->clients_lock_fd);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
@@ -188,8 +188,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
         flock(startup_lock_fd, LOCK_UN);
         close(startup_lock_fd);
-        flock(h->clients_lock_fd, LOCK_UN);
-        close(h->clients_lock_fd);
+        // flock(h->clients_lock_fd, LOCK_UN);
+        // close(h->clients_lock_fd);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
@@ -204,8 +204,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
     if (rc < 0) {
         fprintf(stderr, "seekdb: server not ready\n");
-        flock(h->clients_lock_fd, LOCK_UN);
-        close(h->clients_lock_fd);
+        // flock(h->clients_lock_fd, LOCK_UN);
+        // close(h->clients_lock_fd);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
