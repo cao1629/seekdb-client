@@ -102,9 +102,20 @@ static int try_connect(SeekdbHandleImpl *h)
 {
     MYSQL *m = mysql_init(NULL);
     if (!m) return 0;
-    int ok = mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path,
-                                0) != NULL;
-    if (!ok) {
+
+    int ok = 0;
+    if (mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path, 0)) {
+        /* Real query, not just connect — connect can succeed before the
+         * server's tenant schema is loaded; SELECT 1 forces the full
+         * login-and-execute path so we don't return a false positive. */
+        if (mysql_real_query(m, "SELECT 1", 8) == 0) {
+            MYSQL_RES *r = mysql_store_result(m);
+            if (r) { mysql_free_result(r); ok = 1; }
+            else   { tlog("try_connect: store_result failed: %s\n", mysql_error(m)); }
+        } else {
+            tlog("try_connect: SELECT 1 failed: %s\n", mysql_error(m));
+        }
+    } else {
         tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
     }
     mysql_close(m);
