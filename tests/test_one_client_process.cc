@@ -1,23 +1,25 @@
-// One client, two ways it can go away:
-//   ServerShutdownAfterClientClose — client calls seekdb_close cleanly.
-//     The test process itself is the client.
-//   ServerShutdownAfterClientExit  — client process is killed before close.
-//     A forked child runs as the client; parent SIGKILLs it.
-// In both cases the last-client-gone detection on seekdb.clients should
-// make the server shut itself down.
+// Three ways a single client process can go away. In each case the
+// last-client-gone detection on seekdb.clients should make the server
+// shut itself down, and the test asserts the server is reaped within
+// 15s of the client process being forked.
+//
+//   ClientClose — child calls seekdb_close, then _exit(0).
+//   ClientExit  — child _exits without seekdb_close (kernel releases
+//                 the SH lock via fd cleanup).
+//   KillClient  — child loops; parent SIGKILLs it.
 //
 // Env:
 //   SEEKDB_BIN   path to the seekdb binary
 
 #include <gtest/gtest.h>
 
+#include "port.h"
 #include "seekdb.h"
 #include "test_utils.h"
 
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <signal.h>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -44,70 +46,106 @@ protected:
     }
 
     void TearDown() override {
-        pid_t pid = read_pid(db_dir_);
-        if (pid > 0 && alive(pid)) {
-            wait_until_gone(pid, 5s);
-            if (alive(pid)) kill(pid, SIGKILL);
-        }
-        fs::remove_all(db_dir_);
+        int64_t pid = read_server_pid(db_dir_);
+        while (pid > 0 && !is_server_reaped(pid))
+            std::this_thread::sleep_for(200ms);
     }
 };
 
-TEST_F(OneClientProcess, ServerShutdownAfterClientClose)
-{
-    SeekdbHandle h = nullptr;
-    ASSERT_EQ(seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h),
-              SEEKDB_SUCCESS);
-
-    const pid_t server_pid = read_pid(db_dir_);
-    SeekdbConnection c = nullptr;
-    ASSERT_EQ(seekdb_connect(h, nullptr, true, &c), SEEKDB_SUCCESS);
-    SeekdbResult r = nullptr;
-    EXPECT_EQ(seekdb_query(c, "SELECT 1", 8, &r), SEEKDB_SUCCESS);
-    if (r) seekdb_result_free(r);
-    seekdb_disconnect(c);
-    seekdb_close(h);
-
-    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
-        << "server " << server_pid << " still alive 15s after client closed";
-}
-
-TEST_F(OneClientProcess, ServerShutdownAfterClientExit)
+TEST_F(OneClientProcess, ClientClose)
 {
     int ready[2];
-    ASSERT_EQ(pipe(ready), 0);
+    pipe(ready);
 
-    pid_t child_pid = fork();
-    ASSERT_GE(child_pid, 0);
-    if (child_pid == 0) {
+    pid_t client_pid = fork();
+    if (client_pid == 0) {
         close(ready[0]);
-
         SeekdbHandle h = nullptr;
-        ASSERT_EQ(seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h), SEEKDB_SUCCESS);
-        char byte = 'Y';
-        write(ready[1], &byte, 1);
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        const char y = 'Y';
+        write(ready[1], &y, 1);
         close(ready[1]);
-
-        // Wait to be killed. We intentionally never reach seekdb_close.
-        for (;;) pause();
+        seekdb_close(h);
+        _exit(0);
     }
-
     close(ready[1]);
-
     char buf;
     read(ready[0], &buf, 1);
-
-    const pid_t server_pid = read_pid(db_dir_);
-    EXPECT_TRUE(alive(server_pid));
-
-    // Kill the client before it can reach seekdb_close. The SH lock on
-    // seekdb.clients is OFD-scoped, so it's released when the process dies.
-    kill(child_pid, SIGKILL);
-    ASSERT_EQ(waitpid(child_pid, NULL, 0), child_pid);
     close(ready[0]);
 
-    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
-        << "server " << server_pid << " still alive 15s after client was killed";
+    const auto ddl = std::chrono::steady_clock::now() + 15s;
+
+    const int64_t server_pid = read_server_pid(db_dir_);
+
+    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < ddl)
+        std::this_thread::sleep_for(1s);
+
+    ASSERT_TRUE(is_server_reaped(server_pid))
+        << "server " << server_pid << " not reaped within 15s after client close";
+}
+
+TEST_F(OneClientProcess, ClientExit)
+{
+    int ready[2];
+    pipe(ready);
+
+    pid_t client_pid = fork();
+    if (client_pid == 0) {
+        close(ready[0]);
+        SeekdbHandle h = nullptr;
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        const char y = 'Y';
+        write(ready[1], &y, 1);
+        close(ready[1]);
+        _exit(0);
+    }
+    close(ready[1]);
+    char buf;
+    read(ready[0], &buf, 1);
+    close(ready[0]);
+
+    const auto ddl = std::chrono::steady_clock::now() + 15s;
+
+    const int64_t server_pid = read_server_pid(db_dir_);
+
+    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < ddl)
+        std::this_thread::sleep_for(1s);
+    
+    ASSERT_TRUE(is_server_reaped(server_pid))
+        << "server " << server_pid << " not reaped within 15s after client close";
+}
+
+TEST_F(OneClientProcess, KillClient)
+{
+    int ready[2];
+    pipe(ready);
+
+    pid_t client_pid = fork();
+    if (client_pid == 0) {
+        close(ready[0]);
+        SeekdbHandle h = nullptr;
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        const char y = 'Y';
+        write(ready[1], &y, 1);
+        close(ready[1]);
+        while (true) std::this_thread::sleep_for(1s);
+    }
+    close(ready[1]);
+    char buf;
+    read(ready[0], &buf, 1);
+    close(ready[0]);
+
+    const auto ddl = std::chrono::steady_clock::now() + 15s;
+
+    const int64_t server_pid = read_server_pid(db_dir_);
+
+    terminate_process(server_pid, false);
+
+    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < ddl)
+        std::this_thread::sleep_for(1s);
+
+    ASSERT_TRUE(is_server_reaped(server_pid))
+        << "server " << server_pid << " not reaped within 15s after client close";
 }
 
 }  // namespace

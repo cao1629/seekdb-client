@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include "port.h"
 #include "seekdb.h"
 #include "test_utils.h"
 
@@ -42,11 +43,9 @@ protected:
     }
 
     void TearDown() override {
-        pid_t pid = read_pid(db_dir_);
-        if (pid > 0 && alive(pid)) {
-            wait_until_gone(pid, 5s);
-            if (alive(pid)) kill(pid, SIGKILL);
-        }
+        int64_t pid = read_server_pid(db_dir_);
+        while (pid > 0 && !is_server_reaped(pid))
+            std::this_thread::sleep_for(200ms);
         fs::remove_all(db_dir_);
     }
 };
@@ -73,9 +72,9 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
     char buf;
     ASSERT_EQ(read(ready_a[0], &buf, 1), 1) << "A child died before open";
 
-    const pid_t server_pid = read_pid(db_dir_);
+    const int64_t server_pid = read_server_pid(db_dir_);
     ASSERT_GT(server_pid, 0);
-    ASSERT_TRUE(alive(server_pid));
+    ASSERT_FALSE(is_server_reaped(server_pid));
 
     // Fork B with three single-purpose pipes:
     //   open_done   B→parent: B's seekdb_open succeeded
@@ -124,9 +123,9 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
     ASSERT_EQ(read(open_done[0], &buf, 1), 1) << "B child died before open";
 
     // B must not have spawned a second server.
-    EXPECT_EQ(read_pid(db_dir_), server_pid)
+    EXPECT_EQ(read_server_pid(db_dir_), server_pid)
         << "seekdb.pid changed -- B unexpectedly spawned";
-    EXPECT_TRUE(alive(server_pid));
+    EXPECT_FALSE(is_server_reaped(server_pid));
 
     // Kill A; B still holds its SH on seekdb.clients, so the server should
     // keep running.
@@ -151,7 +150,10 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
     close(open_done[0]);
     close(query_done[0]);
 
-    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
+    auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(200ms);
+    EXPECT_TRUE(is_server_reaped(server_pid))
         << "server " << server_pid << " still alive 15s after last client was killed";
 }
 

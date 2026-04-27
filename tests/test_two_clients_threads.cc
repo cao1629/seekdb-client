@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "port.h"
 #include "seekdb.h"
 #include "test_utils.h"
 
@@ -47,11 +48,13 @@ protected:
         // (crash, Ctrl+C, port collision exit, etc.) before removing the dir
         // — otherwise the leftover process keeps the TCP port + lock fds open
         // and the fresh test's spawned daemon hits OB_SERVER_LISTEN_ERROR.
-        pid_t pid = read_pid(db_dir_);
-        if (pid > 0 && alive(pid)) {
-            kill(pid, SIGTERM);
-            wait_until_gone(pid, 5s);
-            if (alive(pid)) kill(pid, SIGKILL);
+        int64_t pid = read_server_pid(db_dir_);
+        if (pid > 0 && !is_server_reaped(pid)) {
+            terminate_process(pid, /*graceful=*/1);
+            auto deadline = std::chrono::steady_clock::now() + 5s;
+            while (!is_server_reaped(pid) && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(200ms);
+            if (!is_server_reaped(pid)) terminate_process(pid, /*graceful=*/0);
         }
 
         fs::remove_all(db_dir_);
@@ -59,16 +62,9 @@ protected:
     }
 
     void TearDown() override {
-        pid_t pid = read_pid(db_dir_);
-        if (pid > 0 && alive(pid)) {
-            wait_until_gone(pid, 10s);
-            if (alive(pid)) {
-                kill(pid, SIGKILL);
-                tlog("kill -9 server during teardown\n");
-            } 
-        } else {
-            tlog("pid = %d\n", pid);
-        }
+        int64_t pid = read_server_pid(db_dir_);
+        while (pid > 0 && !is_server_reaped(pid))
+            std::this_thread::sleep_for(200ms);
     }
 };
 
@@ -127,12 +123,13 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
 
     // Kill the spawned server so it doesn't linger into TearDown (or the
     // next iteration when this test is run in a loop).
-    pid_t server_pid = read_pid(db_dir_);
-    tlog("read_pid = %d\n", server_pid);
-    if (server_pid > 0 && alive(server_pid)) {
-        kill(server_pid, SIGKILL);
-        int rc = wait_until_gone(server_pid, 10s);
-        tlog("wait_until_gone = %d\n", rc);
+    int64_t server_pid = read_server_pid(db_dir_);
+    tlog("read_server_pid = %lld\n", (long long)server_pid);
+    if (server_pid > 0 && !is_server_reaped(server_pid)) {
+        terminate_process(server_pid, /*graceful=*/0);
+        auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(200ms);
     }
 }
 
@@ -189,9 +186,9 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
     ASSERT_EQ(a_query_rc, SEEKDB_SUCCESS);
 
-    const pid_t server_pid = read_pid(db_dir_);
+    const int64_t server_pid = read_server_pid(db_dir_);
     ASSERT_GT(server_pid, 0);
-    ASSERT_TRUE(alive(server_pid));
+    ASSERT_FALSE(is_server_reaped(server_pid));
 
     std::thread tb(run_client, std::ref(h_b), std::ref(c_b),
                    std::ref(b_open_rc), std::ref(b_query_rc),
@@ -205,9 +202,9 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS);
 
     // Headline invariants: B didn't spawn anything.
-    EXPECT_EQ(read_pid(db_dir_), server_pid)
+    EXPECT_EQ(read_server_pid(db_dir_), server_pid)
         << "seekdb.pid changed -- B unexpectedly spawned";
-    EXPECT_TRUE(alive(server_pid));
+    EXPECT_FALSE(is_server_reaped(server_pid));
 
     EXPECT_TRUE(fs::exists(db_dir_ + "/run/sql.sock"));
 
@@ -219,7 +216,10 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ta.join();
     tb.join();
 
-    EXPECT_TRUE(wait_until_gone(server_pid, 15s))
+    auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(200ms);
+    EXPECT_TRUE(is_server_reaped(server_pid))
         << "server " << server_pid << " still alive 15s after both clients closed";
 }
 

@@ -77,8 +77,7 @@ void reaper_loop()
         {
             std::lock_guard<std::mutex> lk(g_spawned_mu);
             for (auto it = g_spawned.begin(); it != g_spawned.end(); ) {
-                int exited = 0;
-                if (process_wait_nonblock(*it, &exited) == PORT_OK && exited) {
+                if (!is_spawned_server_running(*it)) {
                     process_close(*it);
                     it = g_spawned.erase(it);
                 } else {
@@ -120,19 +119,12 @@ static int try_connect(SeekdbHandleImpl *h)
     MYSQL *m = mysql_init(NULL);
     if (!m) return 0;
 
-    /* The seekdb daemon doesn't speak SSL on its UDS. mariadb-connector-c
-     * 3.4.x's DEFAULT_SSL_VERIFY_SERVER_CERT defaults to ON, which forces
-     * TLS even when MYSQL_OPT_SSL_ENFORCE is off — disabling cert
-     * verification is what actually lets the connect proceed plaintext. */
     char no_ssl = 0;
     mysql_options(m, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
     mysql_options(m, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
 
     int ok = 0;
     if ( mysql_real_connect(m, NULL, "root@sys", "", NULL, 0, h->sock_path, 0)) {
-        /* Real query, not just connect — connect can succeed before the
-         * server's tenant schema is loaded; SELECT 1 forces the full
-         * login-and-execute path so we don't return a false positive. */
         if (mysql_real_query(m, "SELECT 1", 8) == 0) {
             MYSQL_RES *r = mysql_store_result(m);
             if (r) { mysql_free_result(r); ok = 1; }
@@ -158,8 +150,7 @@ static int wait_for_ready(SeekdbHandleImpl *h, Process *spawned)
         tlog("wait_for_ready: cannot connect\n");
 
         /* Our spawned server died before becoming ready — stop waiting. */
-        int exited = 0;
-        if (process_wait_nonblock(spawned, &exited) == PORT_OK && exited) {
+        if (!is_spawned_server_running(spawned)) {
             tlog("spawned %lld died\n", (long long)process_pid(spawned));
             return -1;
         }
@@ -175,19 +166,26 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     *out_handle = NULL;
 
     SeekdbHandleImpl *h = (SeekdbHandleImpl *)calloc(1, sizeof(*h));
-    if (!h) return SEEKDB_INTERNAL_ERROR;
     h->db_dir = xstrdup(db_dir);
     snprintf(h->sock_path,          sizeof(h->sock_path),          "%s/run/sql.sock",        db_dir);
     snprintf(h->clients_lock_path,  sizeof(h->clients_lock_path),  "%s/run/seekdb.clients",  db_dir);
     snprintf(h->startup_lock_path,  sizeof(h->startup_lock_path),  "%s/run/seekdb.startup",  db_dir);
 
-    ensure_dir(db_dir);
+    if (ensure_dir(db_dir) != OK) {
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
 
     char run_dir[256];
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
-    ensure_dir(run_dir);
+    if (ensure_dir(run_dir) != OK) {
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
 
-    if (flock_open(h->clients_lock_path, &h->clients_lock) != PORT_OK) {
+    if (flock_open(h->clients_lock_path, &h->clients_lock) != OK) {
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
@@ -203,17 +201,14 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     tlog("tried to connect after getting client lock, but failed\n");
 
     Flock *startup_lock = NULL;
-    if (flock_open(h->startup_lock_path, &startup_lock) != PORT_OK) {
+    if (flock_open(h->startup_lock_path, &startup_lock) != OK) {
         flock_close(h->clients_lock);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-    if (flock_acquire(startup_lock, FLOCK_EXCLUSIVE) != PORT_OK) {
-        tlog("flock_acquire(startup, EX) failed\n");
-    } else {
-        tlog("got startup lock\n");
-    }
+    flock_acquire(startup_lock, FLOCK_EXCLUSIVE);
+    tlog("got startup lock\n");
 
     if (try_connect(h)) {
         tlog("Already exists a running server\n");
@@ -227,7 +222,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
     char *argv[] = {(char *)bin_path, base_dir_arg,
                     (char *)"--embedded", (char *)"--nodaemon", NULL};
-    if (spawn(bin_path, argv, &spawned) != PORT_OK) {
+    if (spawn(bin_path, argv, &spawned) != OK) {
         flock_close(startup_lock);
         flock_close(h->clients_lock);
         xfree(h->db_dir);
@@ -243,6 +238,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     tlog("spawned pid = %lld, released startup\n", (long long)process_pid(spawned));
 
     if (rc < 0) {
+        // wait_for_ready returns -1 only after observing the spawned server
+        // has exited and been reaped - seekdb internal crashes.
         fprintf(stderr, "seekdb: server not ready\n");
         process_close(spawned);
         flock_close(h->clients_lock);

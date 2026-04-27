@@ -7,9 +7,10 @@
  * Backed by src/port_posix.c on Linux/macOS; src/port_win32.c (planned)
  * for native Windows. CMake selects which backend to compile.
  *
- * Naming: function and type names are unprefixed (flock_open, Process,
- * etc.) for readability. Status codes keep a PORT_ prefix to avoid
- * global-namespace collisions.
+ * Naming: function names, type names, and status codes are all
+ * unprefixed (flock_open, Process, OK, ERR, ...) for readability.
+ * Caveat: OK and ERR are very generic — anyone including port.h
+ * must avoid colliding macros / globals.
  */
 
 #pragma once
@@ -24,12 +25,9 @@ extern "C" {
 /* ============================================================ status ==== */
 
 enum {
-    PORT_OK              =  0,
-    PORT_ERR             = -1,   /* generic */
-    PORT_ERR_BUSY        = -2,   /* try_acquire would block */
-    PORT_ERR_INTERRUPTED = -3,   /* signal interrupted; caller may retry */
-    PORT_ERR_NO_MEMORY   = -4,
-    PORT_ERR_INVALID_ARG = -5
+    OK              =  0,
+    ERR             = -1,   /* generic failure */
+    ERR_INVALID_ARG = -2
 };
 
 /* ============================================================ types ===== */
@@ -51,17 +49,19 @@ typedef enum {
  * On Windows the underlying handle is opened with FILE_SHARE_READ|WRITE
  * so peer processes can also open it.
  */
-int flock_open(const char *path, Flock **out_lock);
+int flock_open(const char *path, Flock **out_flock);
 
 /*
- * Acquire `mode` on the lock. Blocks until acquired. Retries
- * automatically on signal interruption (POSIX EINTR).
+ * Acquire `mode` on the lock. Blocks until acquired. Has no failure
+ * mode in practice — flock(LOCK_SH/LOCK_EX) can only fail on EBADF /
+ * EINVAL (programmer error) or extreme conditions like EINTR /
+ * ENOLCK that we don't surface in this codebase.
  */
-int flock_acquire(Flock *lock, FlockMode mode);
+void flock_acquire(Flock *lock, FlockMode mode);
 
 /*
- * Same as flock_acquire but never blocks — returns PORT_ERR_BUSY
- * immediately if a conflicting lock exists.
+ * Same as flock_acquire but never blocks — returns ERR immediately
+ * if a conflicting lock already exists.
  */
 int flock_try_acquire(Flock *lock, FlockMode mode);
 
@@ -69,11 +69,11 @@ int flock_try_acquire(Flock *lock, FlockMode mode);
  * Release any held lock; keep the underlying file open so the caller
  * can re-acquire without re-opening.
  */
-int flock_release(Flock *lock);
+void flock_release(Flock *lock);
 
 /*
  * Release any held lock and close the underlying file. Frees `lock`.
- * Safe to call with NULL.
+ * Returns ERR if called with NULL.
  */
 int flock_close(Flock *lock);
 
@@ -93,38 +93,53 @@ int flock_close(Flock *lock);
 int spawn(const char *bin_path, char *const argv[], Process **out_proc);
 
 /*
- * Non-blocking exit check. Sets *out_exited to 1 if the spawned child
- * has exited (and reaps it), 0 otherwise. Returns PORT_OK if the call
- * succeeded; non-PORT_OK on a real error.
+ * Non-blocking liveness check on a spawned child. Returns 1 if the
+ * child is still running, 0 if it has exited (and is reaped here as a
+ * side effect on POSIX) or is otherwise no longer reachable.
  *
- * Idempotent: once *out_exited is 1, subsequent calls also return 1
- * without re-issuing waitpid (so calling this in a polling loop is safe).
+ * POSIX: waitpid(pid, NULL, WNOHANG) — returns 0 ⇒ running.
+ * Win32:  WaitForSingleObject(handle, 0) — returns WAIT_TIMEOUT ⇒ running.
  */
-int process_wait_nonblock(Process *proc, int *out_exited);
-
-/*
- * Send termination to the spawned child. `graceful=1` requests an
- * orderly shutdown (POSIX SIGTERM); `graceful=0` is unconditional kill
- * (POSIX SIGKILL). No-op if the child has already exited.
- */
-int process_terminate(Process *proc, int graceful);
+int is_spawned_server_running(Process *proc);
 
 /*
  * Free the Process handle and any associated kernel resources. Does
- * NOT terminate a still-running child — call process_terminate first
- * if needed. Safe to call with NULL.
+ * NOT terminate a still-running child — call terminate_process
+ * first (with process_pid(proc)) if you need that. Safe to call with NULL.
  */
 int process_close(Process *proc);
 
 /* For introspection (debug logging). Returns -1 if not applicable. */
 int64_t process_pid(const Process *proc);
 
+/*
+ * Probe whether the process with `pid` has been reaped (no longer in
+ * the kernel's process table). Returns 1 if reaped (also if pid <= 0
+ * or the caller has no permission to query); 0 if the process still
+ * exists (running or zombie).
+ *
+ * POSIX: kill(pid, 0) returning ESRCH. Win32: OpenProcess fails, or
+ * WaitForSingleObject(handle, 0) returns WAIT_OBJECT_0.
+ *
+ * Unlike process_wait_nonblock, this works on any pid the caller can
+ * see — not just direct children of this process.
+ */
+int is_server_reaped(int64_t pid);
+
+/*
+ * Send termination to the process identified by `pid`. Same `graceful`
+ * semantics as process_terminate (POSIX SIGTERM vs SIGKILL; Win32
+ * always hard). Returns OK if the signal was delivered, OK if the
+ * process is already gone, non-OK on real failure.
+ */
+int terminate_process(int64_t pid, int graceful);
+
 /* ====================================================== filesystem ===== */
 
 /*
  * Create directory `path` with default permissions (POSIX 0755).
- * Returns PORT_OK if the directory exists after the call (whether
- * created or already there); non-PORT_OK on real failure.
+ * Returns OK if the directory exists after the call (whether
+ * created or already there); non-OK on real failure.
  *
  * Named ensure_dir (not mkdir) to avoid colliding with POSIX mkdir(2)
  * from <sys/stat.h>.

@@ -6,7 +6,7 @@
  * ensure_dir (via _mkdir).
  *
  * Notes:
- *   - The `graceful` flag on process_terminate is ignored — Windows
+ *   - The `graceful` flag on terminate_process is ignored — Windows
  *     TerminateProcess is always a hard kill. Implementing graceful
  *     would require Ctrl+C event delivery (console children only) or
  *     WM_CLOSE (GUI children only); neither fits a generic daemon.
@@ -30,10 +30,10 @@ struct Flock {
     int    held;          /* 1 if a lock is currently held on this handle */
 };
 
-int flock_open(const char *path, Flock **out_lock)
+int flock_open(const char *path, Flock **out_flock)
 {
-    if (!path || !out_lock) return PORT_ERR_INVALID_ARG;
-    *out_lock = NULL;
+    if (!path || !out_flock) return ERR_INVALID_ARG;
+    *out_flock = NULL;
 
     HANDLE h = CreateFileA(path,
                            GENERIC_READ | GENERIC_WRITE,
@@ -42,14 +42,14 @@ int flock_open(const char *path, Flock **out_lock)
                            OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL,
                            NULL);
-    if (h == INVALID_HANDLE_VALUE) return PORT_ERR;
+    if (h == INVALID_HANDLE_VALUE) return ERR;
 
     Flock *l = (Flock *)malloc(sizeof(*l));
-    if (!l) { CloseHandle(h); return PORT_ERR_NO_MEMORY; }
+    if (!l) { CloseHandle(h); return ERR; }
     l->handle = h;
     l->held   = 0;
-    *out_lock = l;
-    return PORT_OK;
+    *out_flock = l;
+    return OK;
 }
 
 static int do_lock(Flock *lock, FlockMode mode, int blocking)
@@ -65,41 +65,37 @@ static int do_lock(Flock *lock, FlockMode mode, int blocking)
                     &ov)) {
         DWORD err = GetLastError();
         if (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING)
-            return PORT_ERR_BUSY;
-        return PORT_ERR;
+            return ERR;
+        return ERR;
     }
     lock->held = 1;
-    return PORT_OK;
+    return OK;
 }
 
-int flock_acquire(Flock *lock, FlockMode mode)
+void flock_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
-    return do_lock(lock, mode, /*blocking=*/1);
+    do_lock(lock, mode, /*blocking=*/1);
 }
 
 int flock_try_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
+    if (!lock) return ERR_INVALID_ARG;
     return do_lock(lock, mode, /*blocking=*/0);
 }
 
-int flock_release(Flock *lock)
+void flock_release(Flock *lock)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
     if (lock->held) {
         OVERLAPPED ov;
         memset(&ov, 0, sizeof(ov));
-        if (!UnlockFileEx(lock->handle, 0, MAXDWORD, MAXDWORD, &ov))
-            return PORT_ERR;
+        UnlockFileEx(lock->handle, 0, MAXDWORD, MAXDWORD, &ov);
         lock->held = 0;
     }
-    return PORT_OK;
 }
 
 int flock_close(Flock *lock)
 {
-    if (!lock) return PORT_OK;
+    if (!lock) return ERR;
     if (lock->held) {
         OVERLAPPED ov;
         memset(&ov, 0, sizeof(ov));
@@ -107,7 +103,7 @@ int flock_close(Flock *lock)
     }
     if (lock->handle != INVALID_HANDLE_VALUE) CloseHandle(lock->handle);
     free(lock);
-    return PORT_OK;
+    return OK;
 }
 
 /* ===================================================== Process ====== */
@@ -115,7 +111,6 @@ int flock_close(Flock *lock)
 struct Process {
     HANDLE handle;
     DWORD  pid;
-    int    exited;
 };
 
 /*
@@ -146,11 +141,11 @@ static char *build_cmdline(char *const argv[])
 
 int spawn(const char *bin_path, char *const argv[], Process **out_proc)
 {
-    if (!bin_path || !argv || !out_proc) return PORT_ERR_INVALID_ARG;
+    if (!bin_path || !argv || !out_proc) return ERR_INVALID_ARG;
     *out_proc = NULL;
 
     char *cmd = build_cmdline(argv);
-    if (!cmd) return PORT_ERR_NO_MEMORY;
+    if (!cmd) return ERR;
 
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -166,7 +161,7 @@ int spawn(const char *bin_path, char *const argv[], Process **out_proc)
                              NULL, NULL,
                              &si, &pi);
     free(cmd);
-    if (!ok) return PORT_ERR;
+    if (!ok) return ERR;
 
     /* We don't need the primary thread handle. */
     CloseHandle(pi.hThread);
@@ -175,55 +170,26 @@ int spawn(const char *bin_path, char *const argv[], Process **out_proc)
     if (!p) {
         TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hProcess);
-        return PORT_ERR_NO_MEMORY;
+        return ERR;
     }
     p->handle = pi.hProcess;
     p->pid    = pi.dwProcessId;
-    p->exited = 0;
     *out_proc = p;
-    return PORT_OK;
+    return OK;
 }
 
-int process_wait_nonblock(Process *proc, int *out_exited)
+int is_spawned_server_running(Process *proc)
 {
-    if (!proc || !out_exited) return PORT_ERR_INVALID_ARG;
-    if (proc->exited) { *out_exited = 1; return PORT_OK; }
-
     DWORD r = WaitForSingleObject(proc->handle, 0);
-    if (r == WAIT_OBJECT_0) {
-        proc->exited = 1;
-        *out_exited  = 1;
-        return PORT_OK;
-    }
-    if (r == WAIT_TIMEOUT) {
-        *out_exited = 0;
-        return PORT_OK;
-    }
-    return PORT_ERR;
-}
-
-int process_terminate(Process *proc, int graceful)
-{
-    (void)graceful;   /* Windows: always hard-kill */
-    if (!proc) return PORT_ERR_INVALID_ARG;
-    if (proc->exited) return PORT_OK;
-    if (!TerminateProcess(proc->handle, 1)) {
-        if (GetLastError() == ERROR_ACCESS_DENIED) {
-            /* Already gone — good as terminated. */
-            proc->exited = 1;
-            return PORT_OK;
-        }
-        return PORT_ERR;
-    }
-    return PORT_OK;
+    return r == WAIT_TIMEOUT ? 1 : 0;
 }
 
 int process_close(Process *proc)
 {
-    if (!proc) return PORT_OK;
+    if (!proc) return OK;
     if (proc->handle != NULL) CloseHandle(proc->handle);
     free(proc);
-    return PORT_OK;
+    return OK;
 }
 
 int64_t process_pid(const Process *proc)
@@ -231,12 +197,33 @@ int64_t process_pid(const Process *proc)
     return proc ? (int64_t)proc->pid : -1;
 }
 
+int is_server_reaped(int64_t pid)
+{
+    if (pid <= 0) return 1;
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (h == NULL) return 1;
+    DWORD r = WaitForSingleObject(h, 0);
+    CloseHandle(h);
+    return (r == WAIT_TIMEOUT) ? 0 : 1;
+}
+
+int terminate_process(int64_t pid, int graceful)
+{
+    (void)graceful;   /* Windows: always hard-kill */
+    if (pid <= 0) return ERR_INVALID_ARG;
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+    if (h == NULL) return OK;             /* already gone (or no permission) */
+    BOOL ok = TerminateProcess(h, 1);
+    CloseHandle(h);
+    return ok ? OK : ERR;
+}
+
 /* ====================================================== filesystem ===== */
 
 int ensure_dir(const char *path)
 {
-    if (!path) return PORT_ERR_INVALID_ARG;
-    if (_mkdir(path) == 0) return PORT_OK;
-    if (errno == EEXIST)   return PORT_OK;
-    return PORT_ERR;
+    if (!path) return ERR_INVALID_ARG;
+    if (_mkdir(path) == 0) return OK;
+    if (errno == EEXIST)   return OK;
+    return ERR;
 }

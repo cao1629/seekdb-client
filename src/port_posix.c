@@ -24,19 +24,18 @@ struct Flock {
     int fd;
 };
 
-int flock_open(const char *path, Flock **out_lock)
+int flock_open(const char *path, Flock **out_flock)
 {
-    if (!path || !out_lock) return PORT_ERR_INVALID_ARG;
-    *out_lock = NULL;
+    if (!path || !out_flock) return ERR_INVALID_ARG;
+    *out_flock = NULL;
 
     int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-    if (fd < 0) return PORT_ERR;
+    if (fd < 0) return ERR;
 
-    Flock *l = malloc(sizeof(*l));
-    if (!l) { close(fd); return PORT_ERR_NO_MEMORY; }
+    Flock *l = malloc(sizeof(Flock));
     l->fd = fd;
-    *out_lock = l;
-    return PORT_OK;
+    *out_flock = l;
+    return OK;
 }
 
 static int flock_op_for(FlockMode mode)
@@ -44,109 +43,64 @@ static int flock_op_for(FlockMode mode)
     return (mode == FLOCK_SHARED) ? LOCK_SH : LOCK_EX;
 }
 
-int flock_acquire(Flock *lock, FlockMode mode)
+void flock_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
-    int op = flock_op_for(mode);
-    while (flock(lock->fd, op) != 0) {
-        if (errno == EINTR) continue;        /* hide EINTR from caller */
-        return PORT_ERR;
-    }
-    return PORT_OK;
+    flock(lock->fd, flock_op_for(mode));
 }
 
 int flock_try_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
-    int op = flock_op_for(mode) | LOCK_NB;
-    if (flock(lock->fd, op) != 0) {
-        if (errno == EWOULDBLOCK) return PORT_ERR_BUSY;
-        if (errno == EINTR)       return PORT_ERR_INTERRUPTED;
-        return PORT_ERR;
-    }
-    return PORT_OK;
+    if (!lock) return ERR_INVALID_ARG;
+    if (flock(lock->fd, flock_op_for(mode) | LOCK_NB) != 0) return ERR;
+    return OK;
 }
 
-int flock_release(Flock *lock)
+void flock_release(Flock *lock)
 {
-    if (!lock) return PORT_ERR_INVALID_ARG;
-    if (flock(lock->fd, LOCK_UN) != 0) return PORT_ERR;
-    return PORT_OK;
+    flock(lock->fd, LOCK_UN);
 }
 
 int flock_close(Flock *lock)
 {
-    if (!lock) return PORT_OK;               /* tolerate NULL */
+    if (!lock) return ERR;
     if (lock->fd >= 0) close(lock->fd);      /* close also releases any flock */
     free(lock);
-    return PORT_OK;
+    return OK;
 }
 
 /* ===================================================== Process ====== */
 
 struct Process {
     pid_t pid;
-    int   exited;        /* cached: 1 once waitpid has reaped */
 };
 
 int spawn(const char *bin_path, char *const argv[], Process **out_proc)
 {
-    if (!bin_path || !argv || !out_proc) return PORT_ERR_INVALID_ARG;
+    if (!bin_path || !argv || !out_proc) return ERR_INVALID_ARG;
     *out_proc = NULL;
 
-    Process *p = malloc(sizeof(*p));
-    if (!p) return PORT_ERR_NO_MEMORY;
-    p->exited = 0;
+    Process *p = malloc(sizeof(Process));
 
     if (posix_spawn(&p->pid, bin_path, NULL, NULL, argv, NULL) != 0) {
         free(p);
-        return PORT_ERR;
+        return ERR;
     }
 
     *out_proc = p;
-    return PORT_OK;
+    return OK;
 }
 
-int process_wait_nonblock(Process *proc, int *out_exited)
+int is_spawned_server_running(Process *proc)
 {
-    if (!proc || !out_exited) return PORT_ERR_INVALID_ARG;
-    if (proc->exited) { *out_exited = 1; return PORT_OK; }
-
     pid_t r = waitpid(proc->pid, NULL, WNOHANG);
-    if (r == proc->pid) {
-        proc->exited = 1;
-        *out_exited  = 1;
-        return PORT_OK;
-    }
-    if (r == 0) {
-        *out_exited = 0;
-        return PORT_OK;
-    }
-    /* r == -1: error. ECHILD means already reaped (shouldn't happen here);
-     * other errnos are real failures. */
-    return PORT_ERR;
-}
-
-int process_terminate(Process *proc, int graceful)
-{
-    if (!proc) return PORT_ERR_INVALID_ARG;
-    if (proc->exited) return PORT_OK;
-    int sig = graceful ? SIGTERM : SIGKILL;
-    if (kill(proc->pid, sig) != 0) {
-        if (errno == ESRCH) {                /* process already gone */
-            proc->exited = 1;
-            return PORT_OK;
-        }
-        return PORT_ERR;
-    }
-    return PORT_OK;
+    return r == 0 ? 1 : 0;
 }
 
 int process_close(Process *proc)
 {
-    if (!proc) return PORT_OK;
+    if (!proc) return OK;
     free(proc);
-    return PORT_OK;
+    return OK;
 }
 
 int64_t process_pid(const Process *proc)
@@ -154,12 +108,29 @@ int64_t process_pid(const Process *proc)
     return proc ? (int64_t)proc->pid : -1;
 }
 
+int is_server_reaped(int64_t pid)
+{
+    if (pid <= 0) return 1;
+    return kill((pid_t)pid, 0) == 0 ? 0 : 1;
+}
+
+int terminate_process(int64_t pid, int graceful)
+{
+    if (pid <= 0) return ERR_INVALID_ARG;
+    int sig = graceful ? SIGTERM : SIGKILL;
+    if (kill((pid_t)pid, sig) != 0) {
+        if (errno == ESRCH) return OK;       /* already gone */
+        return ERR;
+    }
+    return OK;
+}
+
 /* ====================================================== filesystem ===== */
 
 int ensure_dir(const char *path)
 {
-    if (!path) return PORT_ERR_INVALID_ARG;
-    if (mkdir(path, 0755) == 0) return PORT_OK;
-    if (errno == EEXIST)        return PORT_OK;
-    return PORT_ERR;
+    if (!path) return ERR_INVALID_ARG;
+    if (mkdir(path, 0755) == 0) return OK;
+    if (errno == EEXIST)        return OK;
+    return ERR;
 }

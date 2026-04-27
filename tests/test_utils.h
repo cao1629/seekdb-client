@@ -2,59 +2,69 @@
 
 #pragma once
 
+#include "port.h"
+
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <pthread.h>
-#include <signal.h>
+#include <functional>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <thread>
-#include <unistd.h>
 
-/* Timestamped debug print. Format: [HH:MM:SS.mmm T=<tid>] ...
- * Single printf call so output is atomic per POSIX stream locking. */
-#define tlog(fmt, ...) do { \
-    struct timespec _ts; \
-    clock_gettime(CLOCK_REALTIME, &_ts); \
-    struct tm _tm; \
-    localtime_r(&_ts.tv_sec, &_tm); \
-    std::printf("[%02d:%02d:%02d.%03ld T=%lx] " fmt, \
-                _tm.tm_hour, _tm.tm_min, _tm.tm_sec, _ts.tv_nsec / 1000000, \
-                (unsigned long)pthread_self(), \
-                ##__VA_ARGS__); \
-} while (0)
+#ifdef __linux__
+#include <sys/stat.h>
+#endif
 
-inline pid_t read_pid(const std::string &db_dir)
+/* Timestamped debug print. Format: [HH:MM:SS.mmm T=<tid>] ... */
+inline void tlog(const char *fmt, ...)
+{
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto tt  = system_clock::to_time_t(now);
+    auto ms  = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+    std::tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &tt);
+#else
+    localtime_r(&tt, &tm_buf);
+#endif
+    auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+
+    char prefix[64];
+    int p = std::snprintf(prefix, sizeof(prefix),
+                          "[%02d:%02d:%02d.%03lld T=%llx] ",
+                          tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
+                          (long long)ms, (unsigned long long)tid);
+
+    char msg[512];
+    std::va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+
+    char buf[600];
+    std::snprintf(buf, sizeof(buf), "%.*s%s", p, prefix, msg);
+    std::fputs(buf, stdout);
+}
+
+inline int64_t read_server_pid(const std::string &db_dir)
 {
     std::FILE *f = std::fopen((db_dir + "/run/seekdb.pid").c_str(), "r");
     if (!f) return -1;
-    long pid = 0;
-    int got = std::fscanf(f, "%ld", &pid);
+    long long pid = 0;
+    int got = std::fscanf(f, "%lld", &pid);
     std::fclose(f);
-    return got == 1 ? (pid_t)pid : -1;
+    return got == 1 ? (int64_t)pid : -1;
 }
 
-inline bool alive(pid_t pid)
-{
-    return pid > 0 && kill(pid, 0) == 0;
-}
-
-inline bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout)
-{
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (alive(pid) && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
-    return !alive(pid);
-}
-
+#ifdef __linux__
 // Read /proc/locks and look for a FLOCK entry on the given file's inode.
-// If mode_filter is non-null, only entries with that mode match ("READ" or
-// "WRITE"); otherwise any FLOCK entry counts. Pure observation, no
-// interaction with the lock.
+// Linux-only — macOS and Windows expose lock info through different APIs
+// or not at all. If mode_filter is non-null, only entries with that mode
+// match ("READ" or "WRITE"); otherwise any FLOCK entry counts. Pure
+// observation, no interaction with the lock.
 inline bool someone_holds_flock(const std::string &path,
                                 const char *mode_filter = nullptr)
 {
@@ -85,4 +95,4 @@ inline bool someone_holds_flock(const std::string &path,
     std::fclose(f);
     return found;
 }
-
+#endif
