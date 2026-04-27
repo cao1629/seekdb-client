@@ -10,8 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <readline/readline.h>
-#include <readline/history.h>
+
+#ifdef _WIN32
+#  define strncasecmp _strnicmp
+#  define strdup      _strdup
+#endif
 
 /* ---------------------------------------------------------------- types -- */
 
@@ -138,6 +141,28 @@ static void execute(SeekdbConnection conn, const char *sql, size_t len)
     seekdb_result_free(result);
 }
 
+/* ---------------------------------------------------------- line input -- */
+
+/* Read one line of input from stdin into a fresh malloc'd buffer.
+ * Trailing '\n' is stripped. Returns NULL on EOF. Lines longer than
+ * 4 KiB are truncated. */
+static char *read_line(const char *prompt)
+{
+    fputs(prompt, stdout);
+    fflush(stdout);
+
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), stdin)) return NULL;
+
+    size_t n = strlen(buf);
+    if (n > 0 && buf[n - 1] == '\n') buf[--n] = '\0';
+
+    char *r = (char *)malloc(n + 1);
+    if (!r) return NULL;
+    memcpy(r, buf, n + 1);
+    return r;
+}
+
 /* ----------------------------------------- check for quit/exit command -- */
 
 static int is_quit(const char *s)
@@ -178,7 +203,7 @@ int main(int argc, char **argv)
 
     for (;;) {
         const char *prompt = query.len == 0 ? "seekdb> " : "     -> ";
-        char *line = readline(prompt);
+        char *line = read_line(prompt);
         if (!line) break;                   /* EOF / Ctrl-D */
 
         /* Skip empty lines. */
@@ -187,8 +212,6 @@ int main(int argc, char **argv)
         if (*p == '\0') { free(line); continue; }
 
         if (query.len == 0 && is_quit(line)) { free(line); break; }
-
-        add_history(line);
 
         /* Append to query buffer. */
         if (query.len) buf_append(&query, " ", 1);

@@ -120,13 +120,3 @@ target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SO
 target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
 gtest_discover_tests(test_two_clients_processes)
 
-find_library(READLINE_LIBRARY readline
-    HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
-find_path(READLINE_INCLUDE_DIR readline/readline.h
-    HINTS /opt/homebrew/include /usr/local/include /usr/include)
-if (READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
-    target_include_directories(seekdb_cli PRIVATE ${READLINE_INCLUDE_DIR})
-    target_link_libraries(seekdb_cli PRIVATE ${READLINE_LIBRARY})
-else()
-    message(FATAL_ERROR "readline not found")
-endif()
