@@ -1,0 +1,3 @@
+[submodule "deps/mariadb-connector-c"]
+	path = deps/mariadb-connector-c
+	url = https://github.com/mariadb-corporation/mariadb-connector-c.git

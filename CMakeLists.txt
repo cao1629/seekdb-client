@@ -14,51 +14,42 @@ endif()
 enable_testing()
 
 # ----------------------------------------------------------------------------
-# Find libmariadb (MariaDB Connector/C)
+# libmariadb — vendored as a git submodule at deps/mariadb-connector-c.
 # ----------------------------------------------------------------------------
 
-set(SEEKDB_LIBMARIADB_DIR "" CACHE PATH "Install prefix of libmariadb")
-
-set(_mariadb_inc_hint "")
-set(_mariadb_lib_hint "")
-if (SEEKDB_LIBMARIADB_DIR)
-    list(APPEND _mariadb_inc_hint "${SEEKDB_LIBMARIADB_DIR}/include")
-    list(APPEND _mariadb_lib_hint "${SEEKDB_LIBMARIADB_DIR}/lib")
-endif()
-
-find_package(PkgConfig QUIET)
-if (PkgConfig_FOUND)
-    pkg_check_modules(_PC_MARIADB QUIET libmariadb)
-    if (_PC_MARIADB_FOUND)
-        list(APPEND _mariadb_inc_hint ${_PC_MARIADB_INCLUDE_DIRS})
-        list(APPEND _mariadb_lib_hint ${_PC_MARIADB_LIBRARY_DIRS})
-    endif()
-endif()
-
-find_path(MARIADB_INCLUDE_DIR
-          NAMES mysql.h
-          PATH_SUFFIXES mariadb mysql
-          HINTS ${_mariadb_inc_hint}
-                /opt/homebrew/include /usr/local/include /usr/include)
-
-find_library(MARIADB_LIBRARY
-             NAMES mariadb mariadbclient mysqlclient
-             HINTS ${_mariadb_lib_hint}
-                   /opt/homebrew/lib /usr/local/lib /usr/lib /usr/lib64
-                   /usr/lib64/mysql /usr/lib64/mariadb
-                   /usr/lib/mysql   /usr/lib/mariadb)
-
-if (NOT MARIADB_INCLUDE_DIR OR NOT MARIADB_LIBRARY)
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/mariadb-connector-c/CMakeLists.txt")
     message(FATAL_ERROR
-        "libmariadb not found.\n"
-        "  MARIADB_INCLUDE_DIR=${MARIADB_INCLUDE_DIR}\n"
-        "  MARIADB_LIBRARY=${MARIADB_LIBRARY}\n"
-        "Install MariaDB Connector/C (e.g. 'brew install mariadb-connector-c'),\n"
-        "or pass -DSEEKDB_LIBMARIADB_DIR=/path/to/libmariadb-install-prefix.")
+        "deps/mariadb-connector-c is empty.  Run:\n"
+        "    git submodule update --init --recursive")
 endif()
 
-message(STATUS "libmariadb include: ${MARIADB_INCLUDE_DIR}")
-message(STATUS "libmariadb library: ${MARIADB_LIBRARY}")
+# Trim mariadb-connector-c down to what we need.
+#   WITH_SSL is mandatory upstream (must be OPENSSL/GNUTLS/SCHANNEL), so
+#   we leave it ON — the submodule will use OpenSSL via the system on Linux
+#   and via Homebrew on macOS.
+set(WITH_UNIT_TESTS    OFF CACHE BOOL "" FORCE)
+set(WITH_CURL          OFF CACHE BOOL "" FORCE)
+set(WITH_DOCS          OFF CACHE BOOL "" FORCE)
+
+# seekdb_client is built static today, but if downstream consumers ever wrap
+# it in a shared library we need PIC code for the bundled libmariadb.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# mariadb-connector-c's install rules reference INSTALL_PLUGINDIR /
+# INSTALL_LIBDIR even under EXCLUDE_FROM_ALL. Set them explicitly so
+# the install commands have a destination (we never actually install).
+include(GNUInstallDirs)
+set(INSTALL_PLUGINDIR "lib/mariadb/plugin")
+set(INSTALL_LIBDIR    "lib")
+
+add_subdirectory(deps/mariadb-connector-c EXCLUDE_FROM_ALL)
+
+# Headers come from two places: the source tree (the bulk of the C API)
+# and the build tree (configure-generated mariadb_version.h, ma_config.h).
+set(MARIADB_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/deps/mariadb-connector-c/include"
+    "${CMAKE_CURRENT_BINARY_DIR}/deps/mariadb-connector-c/include")
+set(MARIADB_LIBRARY mariadbclient)   # CMake target from the submodule
 
 # ----------------------------------------------------------------------------
 # seekdb_client library
@@ -81,7 +72,7 @@ target_include_directories(seekdb_client
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${MARIADB_INCLUDE_DIR})
+            ${MARIADB_INCLUDE_DIRS})
 
 target_link_libraries(seekdb_client PRIVATE ${MARIADB_LIBRARY} Threads::Threads)
 
@@ -94,7 +85,7 @@ target_compile_options(seekdb_client PRIVATE -Wall -Wextra -Wno-unused-parameter
 add_executable(seekdb_cli tools/seekdb_cli.c)
 target_include_directories(seekdb_cli PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${MARIADB_INCLUDE_DIR})
+    ${MARIADB_INCLUDE_DIRS})
 target_link_libraries(seekdb_cli PRIVATE seekdb_client)
 
 # ----------------------------------------------------------------------------

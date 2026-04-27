@@ -120,6 +120,14 @@ static int try_connect(SeekdbHandleImpl *h)
     MYSQL *m = mysql_init(NULL);
     if (!m) return 0;
 
+    /* The seekdb daemon doesn't speak SSL on its UDS. mariadb-connector-c
+     * 3.4.x's DEFAULT_SSL_VERIFY_SERVER_CERT defaults to ON, which forces
+     * TLS even when MYSQL_OPT_SSL_ENFORCE is off — disabling cert
+     * verification is what actually lets the connect proceed plaintext. */
+    char no_ssl = 0;
+    mysql_options(m, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
+    mysql_options(m, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
+
     int ok = 0;
     if ( mysql_real_connect(m, NULL, "root@sys", "", NULL, 0, h->sock_path, 0)) {
         /* Real query, not just connect — connect can succeed before the
@@ -282,6 +290,13 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
 
     c->mysql = mysql_init(NULL);
     if (!c->mysql) { free(c); return SEEKDB_INTERNAL_ERROR; }
+
+    /* Disable SSL — see try_connect for the rationale. */
+    {
+        char no_ssl = 0;
+        mysql_options(c->mysql, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
+        mysql_options(c->mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
+    }
 
     if (!mysql_real_connect(c->mysql,
                             NULL,       /* host — NULL for UDS */
