@@ -103,7 +103,7 @@ TEST_F(OneClientProcess, ServerShutdownAfterClientExit)
     // Kill the client before it can reach seekdb_close. The SH lock on
     // seekdb.clients is OFD-scoped, so it's released when the process dies.
     kill(child_pid, SIGKILL);
-    ASSERT_EQ(::waitpid(child_pid, NULL, 0), child_pid);
+    ASSERT_EQ(waitpid(child_pid, NULL, 0), child_pid);
     close(ready[0]);
 
     EXPECT_TRUE(wait_until_gone(server_pid, 15s))

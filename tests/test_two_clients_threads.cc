@@ -49,9 +49,9 @@ protected:
         // and the fresh test's spawned daemon hits OB_SERVER_LISTEN_ERROR.
         pid_t pid = read_pid(db_dir_);
         if (pid > 0 && alive(pid)) {
-            ::kill(pid, SIGTERM);
+            kill(pid, SIGTERM);
             wait_until_gone(pid, 5s);
-            if (alive(pid)) ::kill(pid, SIGKILL);
+            if (alive(pid)) kill(pid, SIGKILL);
         }
 
         fs::remove_all(db_dir_);
@@ -63,7 +63,7 @@ protected:
         if (pid > 0 && alive(pid)) {
             wait_until_gone(pid, 10s);
             if (alive(pid)) {
-                ::kill(pid, SIGKILL);
+                kill(pid, SIGKILL);
                 tlog("kill -9 server during teardown\n");
             } 
         } else {
@@ -130,7 +130,7 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     pid_t server_pid = read_pid(db_dir_);
     tlog("read_pid = %d\n", server_pid);
     if (server_pid > 0 && alive(server_pid)) {
-        ::kill(server_pid, SIGKILL);
+        kill(server_pid, SIGKILL);
         int rc = wait_until_gone(server_pid, 10s);
         tlog("wait_until_gone = %d\n", rc);
     }

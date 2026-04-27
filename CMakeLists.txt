@@ -92,14 +92,17 @@ target_link_libraries(seekdb_cli PRIVATE seekdb_client)
 # Tests
 # ----------------------------------------------------------------------------
 
-include(FetchContent)
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.14.0
-)
+# Google Test — vendored as a git submodule at deps/googletest, pinned
+# to v1.14.0. Run `git submodule update --init --recursive` after a
+# fresh clone.
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/googletest/CMakeLists.txt")
+    message(FATAL_ERROR
+        "deps/googletest is empty.  Run:\n"
+        "    git submodule update --init --recursive")
+endif()
+
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+add_subdirectory(deps/googletest EXCLUDE_FROM_ALL)
 include(GoogleTest)
 
 add_executable(test_one_client_process tests/test_one_client_process.cc)

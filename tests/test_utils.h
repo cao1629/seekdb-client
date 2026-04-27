@@ -39,7 +39,7 @@ inline pid_t read_pid(const std::string &db_dir)
 
 inline bool alive(pid_t pid)
 {
-    return pid > 0 && ::kill(pid, 0) == 0;
+    return pid > 0 && kill(pid, 0) == 0;
 }
 
 inline bool wait_until_gone(pid_t pid, std::chrono::milliseconds timeout)
@@ -59,7 +59,7 @@ inline bool someone_holds_flock(const std::string &path,
                                 const char *mode_filter = nullptr)
 {
     struct stat st;
-    if (::stat(path.c_str(), &st) != 0) return false;
+    if (stat(path.c_str(), &st) != 0) return false;
     const unsigned long want_inode = st.st_ino;
 
     std::FILE *f = std::fopen("/proc/locks", "r");
