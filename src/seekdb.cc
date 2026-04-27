@@ -529,8 +529,11 @@ static int stmt_setup_result(SeekdbStmtImpl *s, SeekdbResultImpl *r)
         b->buffer        = r->result_str_buffers[i];
         b->buffer_length = BUFSZ_DEFAULT;
         b->length        = &r->result_str_lens[i];
-        b->is_null       = (my_bool *)&r->result_is_null[i];
-        b->error         = (my_bool *)&r->result_error[i];
+        /* Cast through the field's own declared type — `is_null`/`error`
+         * are `my_bool *` in older libmariadb, `bool *` in newer; both
+         * are 1-byte stores. */
+        b->is_null       = (decltype(b->is_null))&r->result_is_null[i];
+        b->error         = (decltype(b->error))  &r->result_error[i];
     }
 
     mysql_free_result(meta);
