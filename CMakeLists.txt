@@ -67,8 +67,15 @@ message(STATUS "libmariadb library: ${MARIADB_LIBRARY}")
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
+if(WIN32)
+    set(SEEKDB_PORT_BACKEND src/port_win32.c)
+else()
+    set(SEEKDB_PORT_BACKEND src/port_posix.c)
+endif()
+
 add_library(seekdb_client
-            src/seekdb.c)
+            src/seekdb.cc
+            ${SEEKDB_PORT_BACKEND})
 
 target_include_directories(seekdb_client
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

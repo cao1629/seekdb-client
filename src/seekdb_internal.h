@@ -1,6 +1,7 @@
 #pragma once
 
 #include "seekdb.h"
+#include "port.h"
 
 #include <mysql.h>
 #include <stddef.h>
@@ -12,7 +13,7 @@ typedef struct {
     char    sock_path[256];
     char    clients_lock_path[256];
     char    startup_lock_path[256];
-    int     clients_lock_fd;
+    Flock   *clients_lock;       /* SH-locked for the lifetime of the handle */
 } SeekdbHandleImpl;
 
 typedef struct {
@@ -63,5 +64,13 @@ typedef struct {
     enum enum_field_types *result_field_types;
 } SeekdbResultImpl;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int read_cell_str(SeekdbResultImpl *r, int64_t index,
                   const char **out_data, size_t *out_len, int *out_is_null);
+
+#ifdef __cplusplus
+}
+#endif
