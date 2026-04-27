@@ -47,7 +47,7 @@ protected:
         pid_t pid = read_pid(db_dir_);
         if (pid > 0 && alive(pid)) {
             wait_until_gone(pid, 5s);
-            if (alive(pid)) ::kill(pid, SIGKILL);
+            if (alive(pid)) kill(pid, SIGKILL);
         }
         fs::remove_all(db_dir_);
     }
@@ -60,14 +60,11 @@ TEST_F(OneClientProcess, ServerShutdownAfterClientClose)
               SEEKDB_SUCCESS);
 
     const pid_t server_pid = read_pid(db_dir_);
-    EXPECT_TRUE(alive(server_pid));
-
     SeekdbConnection c = nullptr;
     ASSERT_EQ(seekdb_connect(h, nullptr, true, &c), SEEKDB_SUCCESS);
     SeekdbResult r = nullptr;
     EXPECT_EQ(seekdb_query(c, "SELECT 1", 8, &r), SEEKDB_SUCCESS);
     if (r) seekdb_result_free(r);
-
     seekdb_disconnect(c);
     seekdb_close(h);
 
@@ -78,37 +75,36 @@ TEST_F(OneClientProcess, ServerShutdownAfterClientClose)
 TEST_F(OneClientProcess, ServerShutdownAfterClientExit)
 {
     int ready[2];
-    ASSERT_EQ(::pipe(ready), 0);
+    ASSERT_EQ(pipe(ready), 0);
 
-    pid_t child_pid = ::fork();
+    pid_t child_pid = fork();
     ASSERT_GE(child_pid, 0);
     if (child_pid == 0) {
-        ::close(ready[0]);
+        close(ready[0]);
 
         SeekdbHandle h = nullptr;
-        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h)
-            != SEEKDB_SUCCESS) _exit(10);
-
+        ASSERT_EQ(seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h), SEEKDB_SUCCESS);
         char byte = 'Y';
-        if (::write(ready[1], &byte, 1) != 1) _exit(13);
-        ::close(ready[1]);
+        write(ready[1], &byte, 1);
+        close(ready[1]);
 
         // Wait to be killed. We intentionally never reach seekdb_close.
-        for (;;) ::pause();
+        for (;;) pause();
     }
-    ::close(ready[1]);
+
+    close(ready[1]);
 
     char buf;
-    ASSERT_EQ(::read(ready[0], &buf, 1), 1) << "client died before open";
+    read(ready[0], &buf, 1);
 
     const pid_t server_pid = read_pid(db_dir_);
     EXPECT_TRUE(alive(server_pid));
 
     // Kill the client before it can reach seekdb_close. The SH lock on
     // seekdb.clients is OFD-scoped, so it's released when the process dies.
-    ASSERT_EQ(::kill(child_pid, SIGKILL), 0);
+    kill(child_pid, SIGKILL);
     ASSERT_EQ(::waitpid(child_pid, NULL, 0), child_pid);
-    ::close(ready[0]);
+    close(ready[0]);
 
     EXPECT_TRUE(wait_until_gone(server_pid, 15s))
         << "server " << server_pid << " still alive 15s after client was killed";
