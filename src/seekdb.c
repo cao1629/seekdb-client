@@ -100,11 +100,12 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 static int try_connect(SeekdbHandleImpl *h)
 {
+
     MYSQL *m = mysql_init(NULL);
     if (!m) return 0;
 
     int ok = 0;
-    if (mysql_real_connect(m, NULL, "root", "", NULL, 0, h->sock_path, 0)) {
+    if ( mysql_real_connect(m, NULL, "root@sys", "", NULL, 0, h->sock_path, 0)) {
         /* Real query, not just connect — connect can succeed before the
          * server's tenant schema is loaded; SELECT 1 forces the full
          * login-and-execute path so we don't return a false positive. */
@@ -118,6 +119,7 @@ static int try_connect(SeekdbHandleImpl *h)
     } else {
         tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
     }
+    tlog("try connected succeeded\n");
     mysql_close(m);
     return ok;
 }
@@ -190,6 +192,15 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         tlog("flock(startup_lock_fd, LOCK_EX) failed: %s\n", strerror(errno));
     } else {
         tlog("got startup lock\n");
+    }
+
+
+    if (try_connect(h)) {
+        tlog("Already exists a running server\n");
+        *out_handle = (SeekdbHandle)h;
+        flock(startup_lock_fd, LOCK_UN);
+        close(startup_lock_fd);
+        return SEEKDB_SUCCESS;
     }
 
     pid_t pid;
