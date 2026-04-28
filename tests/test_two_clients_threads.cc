@@ -43,27 +43,25 @@ protected:
         ASSERT_TRUE(fs::exists(bin_path_));
 
         db_dir_ = "/tmp/seekdb_test_db";
+        fs::remove_all(db_dir_);
+        fs::create_directories(db_dir_);
+    }
 
-        // Kill any leftover daemon from a prior run that didn't run TearDown
-        // (crash, Ctrl+C, port collision exit, etc.) before removing the dir
-        // — otherwise the leftover process keeps the TCP port + lock fds open
-        // and the fresh test's spawned daemon hits OB_SERVER_LISTEN_ERROR.
+    /* TearDown is responsible for reaping any daemon this test spawned —
+     * SIGTERM with a 5s grace window, then SIGKILL, then poll until the
+     * pid is gone from the process table. */
+    void TearDown() override {
         int64_t pid = read_server_pid(db_dir_);
-        if (pid > 0 && !is_server_reaped(pid)) {
+        if (pid <= 0) return;
+
+        if (!is_server_reaped(pid)) {
             terminate_process(pid, /*graceful=*/1);
             auto deadline = std::chrono::steady_clock::now() + 5s;
             while (!is_server_reaped(pid) && std::chrono::steady_clock::now() < deadline)
                 std::this_thread::sleep_for(200ms);
             if (!is_server_reaped(pid)) terminate_process(pid, /*graceful=*/0);
         }
-
-        fs::remove_all(db_dir_);
-        fs::create_directories(db_dir_);
-    }
-
-    void TearDown() override {
-        int64_t pid = read_server_pid(db_dir_);
-        while (pid > 0 && !is_server_reaped(pid))
+        while (!is_server_reaped(pid))
             std::this_thread::sleep_for(200ms);
     }
 };

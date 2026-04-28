@@ -69,7 +69,7 @@ int flock_close(Flock *lock)
 
 /* ===================================================== Process ====== */
 
-int spawn(const char *bin_path, char *const argv[], Process **out_proc)
+int spawn_process(const char *bin_path, char *const argv[], Process **out_proc)
 {
     if (!bin_path || !argv || !out_proc) return ERR_INVALID_ARG;
     *out_proc = NULL;
@@ -85,16 +85,14 @@ int spawn(const char *bin_path, char *const argv[], Process **out_proc)
     return OK;
 }
 
-int reap_if_exited(Process *proc)
+int reap_process(Process *proc)
 {
     if (!proc) return 1;                           /* already reaped + freed */
     pid_t r = waitpid((pid_t)proc->pid, NULL, WNOHANG);
-    return r == 0 ? 0 : 1;
+    return r == 0 ? -1 : 1;                        /* -1 still running, 1 reaped */
 }
 
-int is_server_reaped(int64_t pid)
-{
-    if (pid <= 0) return 1;
+int is_server_reaped(int64_t pid) {
     return kill((pid_t)pid, 0) == 0 ? 0 : 1;
 }
 

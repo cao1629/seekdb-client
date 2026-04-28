@@ -130,7 +130,7 @@ static char *build_cmdline(char *const argv[])
     return cmd;
 }
 
-int spawn(const char *bin_path, char *const argv[], Process **out_proc)
+int spawn_process(const char *bin_path, char *const argv[], Process **out_proc)
 {
     if (!bin_path || !argv || !out_proc) return ERR_INVALID_ARG;
     *out_proc = NULL;
@@ -164,12 +164,12 @@ int spawn(const char *bin_path, char *const argv[], Process **out_proc)
     return OK;
 }
 
-int reap_if_exited(Process *proc)
+int reap_process(Process *proc)
 {
     HANDLE h = (HANDLE)proc->handle;
     if (h == NULL) return 1;                       /* already reaped */
     DWORD r = WaitForSingleObject(h, 0);
-    if (r == WAIT_TIMEOUT) return 0;               /* still running */
+    if (r == WAIT_TIMEOUT) return -1;              /* still running */
     CloseHandle(h);                                /* the reap */
     proc->handle = NULL;                           /* guard against double-close */
     return 1;

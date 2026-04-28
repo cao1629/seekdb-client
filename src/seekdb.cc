@@ -76,7 +76,7 @@ void reaper_loop()
         {
             std::lock_guard<std::mutex> lk(g_spawned_mu);
             for (auto it = g_spawned.begin(); it != g_spawned.end(); ) {
-                if (reap_if_exited(*it)) {
+                if (reap_process(*it) == 1) {
                     free(*it);
                     it = g_spawned.erase(it);
                 } else {
@@ -141,7 +141,7 @@ static int try_connect(SeekdbHandleImpl *h)
 
 /* Poll until the spawned server is ready to serve or has died.
  *   Returns  0: server is ready (try_connect succeeded).
- *   Returns -1: server exited before becoming ready; reap_if_exited
+ *   Returns -1: server exited before becoming ready; reap_process
  *               performed the kernel-side reap and we then freed the
  *               Process struct (caller's `spawned` pointer is dangling).
  *   Otherwise: keeps polling — sleeps WAIT_INTERVAL_US between attempts. */
@@ -155,7 +155,7 @@ static int wait_for_ready(SeekdbHandleImpl *h, Process *spawned)
         tlog("wait_for_ready: cannot connect\n");
 
         /* Our spawned server died before becoming ready — stop waiting. */
-        if (reap_if_exited(spawned)) {
+        if (reap_process(spawned) == 1) {
             tlog("spawned %lld died\n", (long long)spawned->pid);
             free(spawned);
             return -1;
@@ -228,7 +228,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
     char *argv[] = {(char *)bin_path, base_dir_arg,
                     (char *)"--embedded", (char *)"--nodaemon", NULL};
-    if (spawn(bin_path, argv, &spawned) != OK) {
+    if (spawn_process(bin_path, argv, &spawned) != OK) {
         flock_close(startup_lock);
         flock_close(h->clients_lock);
         xfree(h->db_dir);

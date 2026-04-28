@@ -77,19 +77,20 @@ int flock_close(Flock *lock);
  *
  * The returned Process is freed by reap_if_exited once the child exits.
  */
-int spawn(const char *bin_path, char *const argv[], Process **out_proc);
+int spawn_process(const char *bin_path, char *const argv[], Process **out_proc);
 
 /*
- * Non-blocking exit check that performs the kernel-side reap when the
- * child has exited. Returns 1 if exited, 0 if still running. On a
- * return of 1 the caller is responsible for `free(proc)` to release
- * the userspace struct.
+ * Probe the spawned child and reap it if it has exited.
+ *   Returns  1: the process is reaped (either just reaped here, or it
+ *               had already been reaped — caller is responsible for
+ *               `free(proc)` to release the userspace struct).
+ *   Returns -1: the process is still running.
  *
  * POSIX: waitpid(pid, NULL, WNOHANG) reaps the zombie when it returns the pid.
  * Win32: WaitForSingleObject(handle, 0); if signaled, CloseHandle on the
  *        process handle (the Win32 equivalent of reaping).
  */
-int reap_if_exited(Process *proc);
+int reap_process(Process *proc);
 
 /*
  * Probe whether the process with `pid` has been reaped (no longer in
