@@ -123,30 +123,15 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 add_subdirectory(deps/googletest EXCLUDE_FROM_ALL)
 include(GoogleTest)
 
-# POSIX uses fork()/pipe() inline in TEST_F bodies (gtest_main suffices).
-# Win32 has no fork(), so the Win32 versions re-exec the test binary in
-# --client mode and bring their own main() — link gtest, not gtest_main.
-if(WIN32)
-    add_executable(test_one_client_process tests/test_one_client_process_win.cc)
-    target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest)
-    gtest_discover_tests(test_one_client_process DISCOVERY_MODE PRE_TEST)
+add_executable(test_one_client_process tests/test_one_client_process.cc)
+target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_one_client_process DISCOVERY_MODE PRE_TEST)
 
-    add_executable(test_two_clients_processes tests/test_two_clients_processes_win.cc)
-    target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest)
-    gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
-else()
-    add_executable(test_one_client_process tests/test_one_client_process.cc)
-    target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
-    gtest_discover_tests(test_one_client_process DISCOVERY_MODE PRE_TEST)
-
-    add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
-    target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
-    gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
-endif()
+add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
+target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
+gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
 
 add_executable(test_two_clients_threads tests/test_two_clients_threads.cc)
 target_include_directories(test_two_clients_threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
