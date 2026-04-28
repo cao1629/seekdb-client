@@ -13,6 +13,14 @@ endif()
 
 enable_testing()
 
+# On Windows, <windows.h> by default pulls in the legacy <winsock.h>,
+# which clashes with <winsock2.h> used by mariadb-connector-c's SCHANNEL
+# backend (sockaddr_in, fd_set, timeval, etc. all redefined). Defining
+# WIN32_LEAN_AND_MEAN before <windows.h> excludes the legacy winsock.
+if (WIN32)
+    add_compile_definitions(WIN32_LEAN_AND_MEAN)
+endif()
+
 # ----------------------------------------------------------------------------
 # libmariadb — vendored as a git submodule at deps/mariadb-connector-c.
 # ----------------------------------------------------------------------------
@@ -105,18 +113,23 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 add_subdirectory(deps/googletest EXCLUDE_FROM_ALL)
 include(GoogleTest)
 
-add_executable(test_one_client_process tests/test_one_client_process.cc)
-target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_one_client_process)
+# test_one_client_process and test_two_clients_processes use POSIX
+# fork()/pipe()/waitpid() and don't have a Win32 equivalent — skip them
+# under WIN32. test_two_clients_threads is cross-platform.
+if(NOT WIN32)
+    add_executable(test_one_client_process tests/test_one_client_process.cc)
+    target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
+    gtest_discover_tests(test_one_client_process DISCOVERY_MODE PRE_TEST)
+
+    add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
+    target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
+    gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
+endif()
 
 add_executable(test_two_clients_threads tests/test_two_clients_threads.cc)
 target_include_directories(test_two_clients_threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(test_two_clients_threads PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_two_clients_threads)
-
-add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
-target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
-gtest_discover_tests(test_two_clients_processes)
+gtest_discover_tests(test_two_clients_threads DISCOVERY_MODE PRE_TEST)
 

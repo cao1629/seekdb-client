@@ -106,12 +106,12 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     tlog("b rc = %d\n", b_open_rc);
 
     if (a_open_rc && !b_open_rc) {
-        sleep(10000);
+        std::this_thread::sleep_for(10000s);
     }
 
 
     if (b_open_rc && !a_open_rc) {
-        sleep(10000);
+        std::this_thread::sleep_for(10000s);
     }
 
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS) << "client A failed to seekdb_open";
