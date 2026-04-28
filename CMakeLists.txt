@@ -84,7 +84,9 @@ target_include_directories(seekdb_client
 
 target_link_libraries(seekdb_client PRIVATE ${MARIADB_LIBRARY} Threads::Threads)
 
-target_compile_options(seekdb_client PRIVATE -Wall -Wextra -Wno-unused-parameter)
+if (NOT MSVC)
+    target_compile_options(seekdb_client PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
 
 # ----------------------------------------------------------------------------
 # CLI tool
