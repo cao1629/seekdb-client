@@ -21,6 +21,14 @@ if (WIN32)
     add_compile_definitions(WIN32_LEAN_AND_MEAN)
 endif()
 
+# When cross-compiling for Android, the NDK toolchain sets CMAKE_FIND_ROOT_PATH
+# to the cross sysroot only. find_package(OpenSSL) will ignore OPENSSL_ROOT_DIR
+# if it's outside that path. Whitelist our project-built OpenSSL so mariadb-
+# connector-c picks it up.
+if (ANDROID AND DEFINED OPENSSL_ROOT_DIR)
+    list(APPEND CMAKE_FIND_ROOT_PATH "${OPENSSL_ROOT_DIR}")
+endif()
+
 # ----------------------------------------------------------------------------
 # libmariadb — vendored as a git submodule at deps/mariadb-connector-c.
 # ----------------------------------------------------------------------------
