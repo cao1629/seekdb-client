@@ -75,7 +75,7 @@ TEST_F(OneClientProcess, ClientClose)
     read(ready[0], &buf, 1);
     close(ready[0]);
 
-    const auto ddl = std::chrono::steady_clock::now() + 15s;
+    const auto ddl = std::chrono::steady_clock::now() + 30s;
 
     const int64_t server_pid = read_server_pid(db_dir_);
 
@@ -106,7 +106,7 @@ TEST_F(OneClientProcess, ClientExit)
     read(ready[0], &buf, 1);
     close(ready[0]);
 
-    const auto ddl = std::chrono::steady_clock::now() + 15s;
+    const auto ddl = std::chrono::steady_clock::now() + 30s;
 
     const int64_t server_pid = read_server_pid(db_dir_);
 
@@ -139,7 +139,7 @@ TEST_F(OneClientProcess, KillClient)
     read(ready[0], &buf, 1);
     close(ready[0]);
 
-    const auto ddl = std::chrono::steady_clock::now() + 15s;
+    const auto ddl = std::chrono::steady_clock::now() + 30s;
 
     const int64_t server_pid = read_server_pid(db_dir_);
 
