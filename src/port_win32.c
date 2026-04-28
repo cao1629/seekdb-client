@@ -44,14 +44,14 @@ int flock_open(const char *path, Flock **out_flock)
                            NULL);
     if (h == INVALID_HANDLE_VALUE) return ERR;
 
-    Flock *l = (Flock *)malloc(sizeof(*l));
-    if (!l) { CloseHandle(h); return ERR; }
+    Flock *l = (Flock *)malloc(sizeof(Flock));
     l->handle = h;
     l->held   = 0;
     *out_flock = l;
     return OK;
 }
 
+/* Returns 1 if the lock was acquired, 0 otherwise. */
 static int do_lock(Flock *lock, FlockMode mode, int blocking)
 {
     DWORD flags = (mode == FLOCK_EXCLUSIVE) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
@@ -62,14 +62,10 @@ static int do_lock(Flock *lock, FlockMode mode, int blocking)
     if (!LockFileEx(lock->handle, flags, 0,
                     /* lock the entire file */
                     MAXDWORD, MAXDWORD,
-                    &ov)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING)
-            return ERR;
-        return ERR;
-    }
+                    &ov))
+        return 0;
     lock->held = 1;
-    return OK;
+    return 1;
 }
 
 void flock_acquire(Flock *lock, FlockMode mode)
@@ -77,9 +73,9 @@ void flock_acquire(Flock *lock, FlockMode mode)
     do_lock(lock, mode, /*blocking=*/1);
 }
 
+
 int flock_try_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return ERR_INVALID_ARG;
     return do_lock(lock, mode, /*blocking=*/0);
 }
 
@@ -107,11 +103,6 @@ int flock_close(Flock *lock)
 }
 
 /* ===================================================== Process ====== */
-
-struct Process {
-    HANDLE handle;
-    DWORD  pid;
-};
 
 /*
  * Build a Windows command line from argv. CreateProcess wants a single
@@ -167,34 +158,21 @@ int spawn(const char *bin_path, char *const argv[], Process **out_proc)
     CloseHandle(pi.hThread);
 
     Process *p = (Process *)malloc(sizeof(*p));
-    if (!p) {
-        TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hProcess);
-        return ERR;
-    }
-    p->handle = pi.hProcess;
-    p->pid    = pi.dwProcessId;
+    p->handle = pi.hProcess;                /* HANDLE stored as void* */
+    p->pid    = (int64_t)pi.dwProcessId;
     *out_proc = p;
     return OK;
 }
 
-int is_spawned_server_running(Process *proc)
+int reap_if_exited(Process *proc)
 {
-    DWORD r = WaitForSingleObject(proc->handle, 0);
-    return r == WAIT_TIMEOUT ? 1 : 0;
-}
-
-int process_close(Process *proc)
-{
-    if (!proc) return OK;
-    if (proc->handle != NULL) CloseHandle(proc->handle);
-    free(proc);
-    return OK;
-}
-
-int64_t process_pid(const Process *proc)
-{
-    return proc ? (int64_t)proc->pid : -1;
+    HANDLE h = (HANDLE)proc->handle;
+    if (h == NULL) return 1;                       /* already reaped */
+    DWORD r = WaitForSingleObject(h, 0);
+    if (r == WAIT_TIMEOUT) return 0;               /* still running */
+    CloseHandle(h);                                /* the reap */
+    proc->handle = NULL;                           /* guard against double-close */
+    return 1;
 }
 
 int is_server_reaped(int64_t pid)

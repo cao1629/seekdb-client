@@ -48,11 +48,10 @@ void flock_acquire(Flock *lock, FlockMode mode)
     flock(lock->fd, flock_op_for(mode));
 }
 
+
 int flock_try_acquire(Flock *lock, FlockMode mode)
 {
-    if (!lock) return ERR_INVALID_ARG;
-    if (flock(lock->fd, flock_op_for(mode) | LOCK_NB) != 0) return ERR;
-    return OK;
+    return flock(lock->fd, flock_op_for(mode) | LOCK_NB) == 0 ? 1 : 0;
 }
 
 void flock_release(Flock *lock)
@@ -70,42 +69,27 @@ int flock_close(Flock *lock)
 
 /* ===================================================== Process ====== */
 
-struct Process {
-    pid_t pid;
-};
-
 int spawn(const char *bin_path, char *const argv[], Process **out_proc)
 {
     if (!bin_path || !argv || !out_proc) return ERR_INVALID_ARG;
     *out_proc = NULL;
 
     Process *p = malloc(sizeof(Process));
-
-    if (posix_spawn(&p->pid, bin_path, NULL, NULL, argv, NULL) != 0) {
+    pid_t pid;
+    if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
         free(p);
         return ERR;
     }
-
+    p->pid = (int64_t)pid;
     *out_proc = p;
     return OK;
 }
 
-int is_spawned_server_running(Process *proc)
+int reap_if_exited(Process *proc)
 {
-    pid_t r = waitpid(proc->pid, NULL, WNOHANG);
-    return r == 0 ? 1 : 0;
-}
-
-int process_close(Process *proc)
-{
-    if (!proc) return OK;
-    free(proc);
-    return OK;
-}
-
-int64_t process_pid(const Process *proc)
-{
-    return proc ? (int64_t)proc->pid : -1;
+    if (!proc) return 1;                           /* already reaped + freed */
+    pid_t r = waitpid((pid_t)proc->pid, NULL, WNOHANG);
+    return r == 0 ? 0 : 1;
 }
 
 int is_server_reaped(int64_t pid)

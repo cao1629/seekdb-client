@@ -1,18 +1,3 @@
-/*
- * port.h — Platform Abstraction Layer for seekdb-client.
- *
- * Current scope: file locks and spawned-process lifecycle.
- * Future iterations may add time, threading, mutex, mkdir, etc.
- *
- * Backed by src/port_posix.c on Linux/macOS; src/port_win32.c (planned)
- * for native Windows. CMake selects which backend to compile.
- *
- * Naming: function names, type names, and status codes are all
- * unprefixed (flock_open, Process, OK, ERR, ...) for readability.
- * Caveat: OK and ERR are very generic — anyone including port.h
- * must avoid colliding macros / globals.
- */
-
 #pragma once
 
 #include <stddef.h>
@@ -32,8 +17,17 @@ enum {
 
 /* ============================================================ types ===== */
 
-typedef struct Flock     Flock;     /* opaque file-lock handle */
-typedef struct Process  Process;  /* opaque spawned-process handle */
+typedef struct Flock Flock;        /* opaque file-lock handle */
+
+/* Spawned-process handle. `pid` is exposed for logging; `handle` is a
+ * Win32 HANDLE managed exclusively by port_win32.c (kept as void* here
+ * so consumers don't need <windows.h>). */
+typedef struct Process {
+    int64_t pid;
+#ifdef _WIN32
+    void *handle;
+#endif
+} Process;
 
 typedef enum {
     FLOCK_SHARED,
@@ -45,23 +39,17 @@ typedef enum {
 /*
  * Open (creating if necessary) a lock file at `path`. The returned Flock
  * initially holds no lock — call flock_acquire to take one.
- *
- * On Windows the underlying handle is opened with FILE_SHARE_READ|WRITE
- * so peer processes can also open it.
  */
 int flock_open(const char *path, Flock **out_flock);
 
 /*
- * Acquire `mode` on the lock. Blocks until acquired. Has no failure
- * mode in practice — flock(LOCK_SH/LOCK_EX) can only fail on EBADF /
- * EINVAL (programmer error) or extreme conditions like EINTR /
- * ENOLCK that we don't surface in this codebase.
+ * Acquire `mode` on the lock. Blocks until acquired.
  */
 void flock_acquire(Flock *lock, FlockMode mode);
 
 /*
- * Same as flock_acquire but never blocks — returns ERR immediately
- * if a conflicting lock already exists.
+ * Same as flock_acquire but never blocks. Returns 1 if the lock was
+ * acquired, 0 if it was not.
  */
 int flock_try_acquire(Flock *lock, FlockMode mode);
 
@@ -87,30 +75,21 @@ int flock_close(Flock *lock);
  * project's O_CLOEXEC discipline (the lock fds in seekdb_open carry
  * O_CLOEXEC, so they aren't inherited).
  *
- * The returned Process must be freed with process_close regardless of
- * whether the child exits.
+ * The returned Process is freed by reap_if_exited once the child exits.
  */
 int spawn(const char *bin_path, char *const argv[], Process **out_proc);
 
 /*
- * Non-blocking liveness check on a spawned child. Returns 1 if the
- * child is still running, 0 if it has exited (and is reaped here as a
- * side effect on POSIX) or is otherwise no longer reachable.
+ * Non-blocking exit check that performs the kernel-side reap when the
+ * child has exited. Returns 1 if exited, 0 if still running. On a
+ * return of 1 the caller is responsible for `free(proc)` to release
+ * the userspace struct.
  *
- * POSIX: waitpid(pid, NULL, WNOHANG) — returns 0 ⇒ running.
- * Win32:  WaitForSingleObject(handle, 0) — returns WAIT_TIMEOUT ⇒ running.
+ * POSIX: waitpid(pid, NULL, WNOHANG) reaps the zombie when it returns the pid.
+ * Win32: WaitForSingleObject(handle, 0); if signaled, CloseHandle on the
+ *        process handle (the Win32 equivalent of reaping).
  */
-int is_spawned_server_running(Process *proc);
-
-/*
- * Free the Process handle and any associated kernel resources. Does
- * NOT terminate a still-running child — call terminate_process
- * first (with process_pid(proc)) if you need that. Safe to call with NULL.
- */
-int process_close(Process *proc);
-
-/* For introspection (debug logging). Returns -1 if not applicable. */
-int64_t process_pid(const Process *proc);
+int reap_if_exited(Process *proc);
 
 /*
  * Probe whether the process with `pid` has been reaped (no longer in

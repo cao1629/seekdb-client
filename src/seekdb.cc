@@ -54,8 +54,7 @@ static void tlog(const char *fmt, ...)
 
 /* Set of spawned servers this process has not yet reaped.
  * A single client process may open multiple seekdb instances (distinct
- * db-dirs), each spawning its own server, so we need a set rather than a
- * single slot. */
+ * db-dirs), each spawning its own server/ */
 namespace {
 
 std::mutex             g_spawned_mu;
@@ -77,8 +76,8 @@ void reaper_loop()
         {
             std::lock_guard<std::mutex> lk(g_spawned_mu);
             for (auto it = g_spawned.begin(); it != g_spawned.end(); ) {
-                if (!is_spawned_server_running(*it)) {
-                    process_close(*it);
+                if (reap_if_exited(*it)) {
+                    free(*it);
                     it = g_spawned.erase(it);
                 } else {
                     ++it;
@@ -140,6 +139,12 @@ static int try_connect(SeekdbHandleImpl *h)
     return ok;
 }
 
+/* Poll until the spawned server is ready to serve or has died.
+ *   Returns  0: server is ready (try_connect succeeded).
+ *   Returns -1: server exited before becoming ready; reap_if_exited
+ *               performed the kernel-side reap and we then freed the
+ *               Process struct (caller's `spawned` pointer is dangling).
+ *   Otherwise: keeps polling — sleeps WAIT_INTERVAL_US between attempts. */
 static int wait_for_ready(SeekdbHandleImpl *h, Process *spawned)
 {
     for (;;) {
@@ -150,8 +155,9 @@ static int wait_for_ready(SeekdbHandleImpl *h, Process *spawned)
         tlog("wait_for_ready: cannot connect\n");
 
         /* Our spawned server died before becoming ready — stop waiting. */
-        if (!is_spawned_server_running(spawned)) {
-            tlog("spawned %lld died\n", (long long)process_pid(spawned));
+        if (reap_if_exited(spawned)) {
+            tlog("spawned %lld died\n", (long long)spawned->pid);
+            free(spawned);
             return -1;
         }
 
@@ -230,18 +236,17 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
 
-    tlog("ready to call wait_for_ready(spawned pid = %lld)\n",
-         (long long)process_pid(spawned));
+    /* Cache the pid: wait_for_ready frees `spawned` on -1, so we can't
+     * deref it for the post-call tlog. */
+    const int64_t spawned_pid = spawned->pid;
+    tlog("ready to call wait_for_ready(spawned pid = %lld)\n", (long long)spawned_pid);
     int rc = wait_for_ready(h, spawned);
 
     flock_close(startup_lock);
-    tlog("spawned pid = %lld, released startup\n", (long long)process_pid(spawned));
+    tlog("spawned pid = %lld, released startup\n", (long long)spawned_pid);
 
     if (rc < 0) {
-        // wait_for_ready returns -1 only after observing the spawned server
-        // has exited and been reaped - seekdb internal crashes.
         fprintf(stderr, "seekdb: server not ready\n");
-        process_close(spawned);
         flock_close(h->clients_lock);
         xfree(h->db_dir);
         free(h);
