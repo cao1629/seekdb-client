@@ -122,11 +122,14 @@ static int try_connect(SeekdbHandleImpl *h)
     mysql_options(m, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
     mysql_options(m, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
 
-    int ok = 0;
     if ( mysql_real_connect(m, NULL, "root@sys", "", NULL, 0, h->sock_path, 0)) {
         if (mysql_real_query(m, "SELECT 1", 8) == 0) {
             MYSQL_RES *r = mysql_store_result(m);
-            if (r) { mysql_free_result(r); ok = 1; }
+            if (r) { mysql_free_result(r);
+                tlog("try connected succeeded\n");
+                mysql_close(m);
+                return 1;
+            }
             else   { tlog("try_connect: store_result failed: %s\n", mysql_error(m)); }
         } else {
             tlog("try_connect: SELECT 1 failed: %s\n", mysql_error(m));
@@ -134,9 +137,8 @@ static int try_connect(SeekdbHandleImpl *h)
     } else {
         tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
     }
-    tlog("try connected succeeded\n");
     mysql_close(m);
-    return ok;
+    return 0;;
 }
 
 /* Poll until the spawned server is ready to serve or has died.
