@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <string>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -49,6 +50,7 @@ protected:
         int64_t pid = read_server_pid(db_dir_);
         while (!is_server_reaped(pid))
             std::this_thread::sleep_for(200ms);
+        printf("Torn down.\n");
     }
 };
 
@@ -128,7 +130,9 @@ TEST_F(OneClientProcess, KillClient)
         const char y = 'Y';
         write(ready[1], &y, 1);
         close(ready[1]);
-        while (true) std::this_thread::sleep_for(1s);
+        while (true) {
+            std::this_thread::sleep_for(10s);
+        };
     }
     close(ready[1]);
     char buf;
@@ -139,7 +143,7 @@ TEST_F(OneClientProcess, KillClient)
 
     const int64_t server_pid = read_server_pid(db_dir_);
 
-    terminate_process(server_pid, false);
+    terminate_process(client_pid, true);
 
     while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < ddl)
         std::this_thread::sleep_for(1s);

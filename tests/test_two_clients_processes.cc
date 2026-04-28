@@ -44,7 +44,7 @@ protected:
 
     void TearDown() override {
         int64_t pid = read_server_pid(db_dir_);
-        while (pid > 0 && !is_server_reaped(pid))
+        while (!is_server_reaped(pid))
             std::this_thread::sleep_for(200ms);
         fs::remove_all(db_dir_);
     }

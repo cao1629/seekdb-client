@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdio.h>
 
 /* ============================================================ Flock ====== */
 
@@ -93,6 +94,7 @@ int reap_process(Process *proc)
 }
 
 int is_server_reaped(int64_t pid) {
+    printf("is_server_reaped: pid = %d\n", pid);
     return kill((pid_t)pid, 0) == 0 ? 0 : 1;
 }
 
