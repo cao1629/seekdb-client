@@ -251,7 +251,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     /* Register the spawned process with the background reaper so it
      * gets reaped once the server exits. Start the reaper lazily. */
     spawned_add(spawned);
-    std::call_once(g_reaper_once, start_reaper);
+    // std::call_once(g_reaper_once, start_reaper);
 
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
