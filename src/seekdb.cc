@@ -218,13 +218,6 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     flock_acquire(startup_lock, FLOCK_EXCLUSIVE);
     tlog("got startup lock\n");
 
-    if (try_connect(h)) {
-        tlog("Already exists a running server\n");
-        *out_handle = (SeekdbHandle)h;
-        flock_close(startup_lock);
-        return SEEKDB_SUCCESS;
-    }
-
     Process *spawned = NULL;
     char base_dir_arg[512];
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
