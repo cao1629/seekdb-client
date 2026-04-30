@@ -152,7 +152,19 @@ int spawn_process(const char *bin_path, char *const argv[], Process **out_proc)
                              NULL, NULL,
                              &si, &pi);
     free(cmd);
-    if (!ok) return ERR;
+    if (!ok) {
+        DWORD err = GetLastError();
+        char errmsg[256];
+        DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM
+                                 | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                 NULL, err, 0,
+                                 errmsg, sizeof(errmsg), NULL);
+        if (n == 0) errmsg[0] = '\0';
+        fprintf(stderr,
+                "spawn_process: CreateProcessA(%s) failed: error %lu: %s",
+                bin_path, (unsigned long)err, errmsg);
+        return ERR;
+    }
 
     /* We don't need the primary thread handle. */
     CloseHandle(pi.hThread);

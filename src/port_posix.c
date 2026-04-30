@@ -11,13 +11,14 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <stdio.h>
 
 /* ============================================================ Flock ====== */
 
@@ -77,7 +78,11 @@ int spawn_process(const char *bin_path, char *const argv[], Process **out_proc)
 
     Process *p = malloc(sizeof(Process));
     pid_t pid;
-    if (posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL) != 0) {
+    int err = posix_spawn(&pid, bin_path, NULL, NULL, argv, NULL);
+    if (err != 0) {
+        fprintf(stderr,
+                "spawn_process: posix_spawn(%s) failed: errno %d: %s\n",
+                bin_path, err, strerror(err));
         free(p);
         return ERR;
     }
