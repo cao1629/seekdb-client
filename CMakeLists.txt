@@ -47,6 +47,16 @@ set(WITH_UNIT_TESTS    OFF CACHE BOOL "" FORCE)
 set(WITH_CURL          OFF CACHE BOOL "" FORCE)
 set(WITH_DOCS          OFF CACHE BOOL "" FORCE)
 
+# mariadb-connector-c on Windows references ${ZLIB_LIBRARY} in libmariadb's
+# link list even when the build is using its own bundled zlib (built as a
+# static target named `zlib` under deps/mariadb-connector-c/external/zlib).
+# Without this, ZLIB_LIBRARY is empty/NOTFOUND and CMake fails generation.
+# On macOS/Linux find_package(ZLIB) finds the system zlib, so this is a
+# Windows-only workaround.
+if(WIN32)
+    set(ZLIB_LIBRARY zlib CACHE STRING "" FORCE)
+endif()
+
 # seekdb_client is built static today, but if downstream consumers ever wrap
 # it in a shared library we need PIC code for the bundled libmariadb.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
