@@ -1,15 +1,12 @@
 #include "seekdb.h"
 #include "seekdb_internal.h"
 #include "port.h"
+#include "tlog.h"
 
 #include <cerrno>
-#include <chrono>
-#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
-#include <functional>
 #include <list>
 #include <mutex>
 #include <thread>
@@ -18,39 +15,6 @@
 
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
-
-/* Timestamped debug print. Format: [HH:MM:SS.mmm T=<tid>] ...
- * Built into a single fputs so output is atomic per stream-locking. */
-static void tlog(const char *fmt, ...)
-{
-    using namespace std::chrono;
-    auto now  = system_clock::now();
-    auto tt   = system_clock::to_time_t(now);
-    auto ms   = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
-    std::tm tm_buf;
-#ifdef _WIN32
-    localtime_s(&tm_buf, &tt);
-#else
-    localtime_r(&tt, &tm_buf);
-#endif
-    auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
-
-    char prefix[64];
-    int p = std::snprintf(prefix, sizeof(prefix),
-                          "[%02d:%02d:%02d.%03lld T=%llx] ",
-                          tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
-                          (long long)ms, (unsigned long long)tid);
-
-    char msg[512];
-    std::va_list ap;
-    va_start(ap, fmt);
-    std::vsnprintf(msg, sizeof(msg), fmt, ap);
-    va_end(ap);
-    
-    char buf[600];
-    std::snprintf(buf, sizeof(buf), "%.*s%s", p, prefix, msg);
-    std::fputs(buf, stdout);
-}
 
 /* Set of spawned servers this process has not yet reaped.
  * A single client process may open multiple seekdb instances (distinct
