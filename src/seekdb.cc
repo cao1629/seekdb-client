@@ -46,7 +46,7 @@ static void tlog(const char *fmt, ...)
     va_start(ap, fmt);
     std::vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-
+    
     char buf[600];
     std::snprintf(buf, sizeof(buf), "%.*s%s", p, prefix, msg);
     std::fputs(buf, stdout);
@@ -77,6 +77,7 @@ void reaper_loop()
             std::lock_guard<std::mutex> lk(g_spawned_mu);
             for (auto it = g_spawned.begin(); it != g_spawned.end(); ) {
                 if (reap_process(*it) == 1) {
+                    tlog("reaper: reaped pid %lld\n", (long long)(*it)->pid);
                     free(*it);
                     it = g_spawned.erase(it);
                 } else {
@@ -173,6 +174,8 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     if (!bin_path || !db_dir || !out_handle) return SEEKDB_INVALID_ARGUMENT;
     *out_handle = NULL;
 
+    tlog("seekdb_open: bin=%s db_dir=%s\n", bin_path, db_dir);
+
     SeekdbHandleImpl *h = (SeekdbHandleImpl *)calloc(1, sizeof(*h));
     h->db_dir = xstrdup(db_dir);
     snprintf(h->sock_path,          sizeof(h->sock_path),          "%s/run/sql.sock",        db_dir);
@@ -203,6 +206,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     tlog("got seekdb.clients\n");
 
     if (try_connect(h)) {
+        tlog("seekdb_open: fast-path success — server already serving\n");
         *out_handle = (SeekdbHandle)h;
         return SEEKDB_SUCCESS;
     }
@@ -228,6 +232,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         flock_close(h->clients_lock);
         xfree(h->db_dir);
         free(h);
+        tlog("spawn process failed.");
         return SEEKDB_INTERNAL_ERROR;
     }
 
@@ -237,8 +242,9 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     tlog("ready to call wait_for_ready(spawned pid = %lld)\n", (long long)spawned_pid);
     int rc = wait_for_ready(h, spawned);
 
-    flock_close(startup_lock);
     tlog("spawned pid = %lld, released startup\n", (long long)spawned_pid);
+    flock_close(startup_lock);
+
 
     if (rc < 0) {
         fprintf(stderr, "seekdb: server not ready\n");
@@ -253,6 +259,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     spawned_add(spawned);
     // std::call_once(g_reaper_once, start_reaper);
 
+    tlog("seekdb_open: success (spawned pid = %lld)\n", (long long)spawned_pid);
     *out_handle = (SeekdbHandle)h;
     return SEEKDB_SUCCESS;
 }
@@ -261,6 +268,8 @@ int seekdb_close(SeekdbHandle handle)
 {
     if (!handle) return SEEKDB_INVALID_ARGUMENT;
     SeekdbHandleImpl *h = (SeekdbHandleImpl *)handle;
+
+    tlog("seekdb_close: db_dir=%s\n", h->db_dir);
 
     if (h->clients_lock) {
         flock_close(h->clients_lock);
@@ -281,6 +290,9 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
     *out_connection = NULL;
 
     SeekdbHandleImpl *h = (SeekdbHandleImpl *)handle;
+
+    tlog("seekdb_connect: sock=%s db=%s autocommit=%d\n",
+         h->sock_path, database ? database : "(null)", (int)autocommit);
 
     SeekdbConnectionImpl *c = (SeekdbConnectionImpl *)calloc(1, sizeof(*c));
     if (!c) return SEEKDB_INTERNAL_ERROR;
@@ -319,6 +331,7 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
         }
     }
 
+    tlog("seekdb_connect: success\n");
     *out_connection = (SeekdbConnection)c;
     return SEEKDB_SUCCESS;
 }
