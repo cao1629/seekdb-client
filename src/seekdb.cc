@@ -123,7 +123,15 @@ static int try_connect(SeekdbHandleImpl *h)
     mysql_options(m, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
     mysql_options(m, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
 
-    if ( mysql_real_connect(m, NULL, "root@sys", "", NULL, 0, h->sock_path, 0)) {
+    const bool use_tcp = h->port != 0;
+    if (mysql_real_connect(m,
+                           use_tcp ? h->host : NULL,
+                           "root@sys",
+                           "",
+                           NULL,
+                           use_tcp ? (unsigned int)h->port : 0,
+                           use_tcp ? NULL : h->sock_path,
+                           0)) {
         if (mysql_real_query(m, "SELECT 1", 8) == 0) {
             MYSQL_RES *r = mysql_store_result(m);
             if (r) { mysql_free_result(r);
@@ -136,7 +144,11 @@ static int try_connect(SeekdbHandleImpl *h)
             tlog("try_connect: SELECT 1 failed: %s\n", mysql_error(m));
         }
     } else {
-        tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
+        if (use_tcp) {
+            tlog("try_connect failed: db_dir=%s, host=%s:%d\n", h->db_dir, h->host, h->port);
+        } else {
+            tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
+        }
     }
     mysql_close(m);
     return 0;;
@@ -181,6 +193,11 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(h->sock_path,          sizeof(h->sock_path),          "%s/run/sql.sock",        db_dir);
     snprintf(h->clients_lock_path,  sizeof(h->clients_lock_path),  "%s/run/seekdb.clients",  db_dir);
     snprintf(h->startup_lock_path,  sizeof(h->startup_lock_path),  "%s/run/seekdb.startup",  db_dir);
+
+    if (port != 0) {
+        snprintf(h->host, sizeof(h->host), "127.0.0.1");
+        h->port = port;
+    }
 
     if (ensure_dir(db_dir) != OK) {
         xfree(h->db_dir);
@@ -291,8 +308,14 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
 
     SeekdbHandleImpl *h = (SeekdbHandleImpl *)handle;
 
-    tlog("seekdb_connect: sock=%s db=%s autocommit=%d\n",
-         h->sock_path, database ? database : "(null)", (int)autocommit);
+    const bool use_tcp = h->port != 0;
+    if (use_tcp) {
+        tlog("seekdb_connect: tcp=%s:%d db=%s autocommit=%d\n",
+             h->host, h->port, database ? database : "(null)", (int)autocommit);
+    } else {
+        tlog("seekdb_connect: sock=%s db=%s autocommit=%d\n",
+             h->sock_path, database ? database : "(null)", (int)autocommit);
+    }
 
     SeekdbConnectionImpl *c = (SeekdbConnectionImpl *)calloc(1, sizeof(*c));
     if (!c) return SEEKDB_INTERNAL_ERROR;
@@ -308,16 +331,21 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
     }
 
     if (!mysql_real_connect(c->mysql,
-                            NULL,       /* host — NULL for UDS */
+                            use_tcp ? h->host : NULL,
                             "root",
                             "",
                             database,
-                            0,          /* port — ignored for UDS */
-                            h->sock_path,
+                            use_tcp ? (unsigned int)h->port : 0,
+                            use_tcp ? NULL : h->sock_path,
                             0))
     {
-        fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
-                h->sock_path, mysql_error(c->mysql));
+        if (use_tcp) {
+            fprintf(stderr, "seekdb: connect(%s:%d) failed: %s\n",
+                    h->host, h->port, mysql_error(c->mysql));
+        } else {
+            fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
+                    h->sock_path, mysql_error(c->mysql));
+        }
         mysql_close(c->mysql);
         free(c);
         return SEEKDB_INTERNAL_ERROR;

@@ -14,6 +14,8 @@ typedef struct {
     char    clients_lock_path[256];
     char    startup_lock_path[256];
     Flock   *clients_lock;       /* SH-locked for the lifetime of the handle */
+    char    host[64];            /* set to "127.0.0.1" when caller passes a non-zero port */
+    int     port;                /* 0 ⇒ use sock_path (UDS); non-zero ⇒ use TCP host:port */
 } SeekdbHandleImpl;
 
 typedef struct {
