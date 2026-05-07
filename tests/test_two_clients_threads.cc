@@ -66,6 +66,7 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     std::mutex m;
     std::condition_variable cv;
     bool a_opened = false, b_opened = false;
+    bool close_signal = false;
     int a_open_rc = -1, b_open_rc = -1;
     std::vector<int64_t> spawned_pids;
 
@@ -83,6 +84,14 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
 
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
+
+        // Wait for the test thread to signal close. Holding the handle
+        // here keeps SH on seekdb.clients held, so the daemon doesn't
+        // shut down before both opens have been asserted.
+        {
+            std::unique_lock<std::mutex> lk(m);
+            cv.wait(lk, [&] { return close_signal; });
+        }
 
         seekdb_close(h);
         tlog("seekdb_close called\n");
@@ -102,6 +111,12 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS) << "client A failed to seekdb_open";
     ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS) << "client B failed to seekdb_open";
 
+    // Both opens succeeded — let the threads proceed to seekdb_close.
+    {
+        std::lock_guard<std::mutex> lk(m);
+        close_signal = true;
+    }
+    cv.notify_all();
 
     ta.join();
     tb.join();
