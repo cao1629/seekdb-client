@@ -88,7 +88,13 @@ static int do_lock(Flock *lock, FlockMode mode, int blocking)
 
 int flock_acquire(Flock *lock, FlockMode mode)
 {
-    return do_lock(lock, mode, /*blocking=*/1);
+    int rc = do_lock(lock, mode, /*blocking=*/1);
+    if (rc) {
+        tlog("flock_acquire(mode=%s) ok: handle=%p\n",
+             (mode == FLOCK_EXCLUSIVE) ? "EX" : "SH",
+             (void *)lock->handle);
+    }
+    return rc;
 }
 
 
@@ -302,6 +308,9 @@ int flock_acquire(Flock *lock, FlockMode mode)
              errno, strerror(errno));
         return 0;
     }
+    tlog("flock_acquire(mode=%s) ok: fd=%d\n",
+         (mode == FLOCK_EXCLUSIVE) ? "EX" : "SH",
+         lock->fd);
     return 1;
 }
 
