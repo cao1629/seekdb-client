@@ -127,18 +127,26 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 add_subdirectory(deps/googletest EXCLUDE_FROM_ALL)
 include(GoogleTest)
 
+# Per-test data dirs live under <build>/test_data/<test-name>, given to
+# each test as a SEEKDB_TEST_DATA_ROOT compile-time string. Tests append
+# their own subdir name so different fixtures don't trample each other.
+set(SEEKDB_TEST_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/test_data")
+
 add_executable(test_one_client_process tests/test_one_client_process.cc)
 target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(test_one_client_process PRIVATE SEEKDB_TEST_DATA_ROOT="${SEEKDB_TEST_DATA_ROOT}")
 target_link_libraries(test_one_client_process PRIVATE seekdb_client GTest::gtest_main)
 gtest_discover_tests(test_one_client_process DISCOVERY_MODE PRE_TEST)
 
 add_executable(test_two_clients_processes tests/test_two_clients_processes.cc)
 target_include_directories(test_two_clients_processes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(test_two_clients_processes PRIVATE SEEKDB_TEST_DATA_ROOT="${SEEKDB_TEST_DATA_ROOT}")
 target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gtest_main)
 gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
 
 add_executable(test_two_clients_threads tests/test_two_clients_threads.cc)
 target_include_directories(test_two_clients_threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(test_two_clients_threads PRIVATE SEEKDB_TEST_DATA_ROOT="${SEEKDB_TEST_DATA_ROOT}")
 target_link_libraries(test_two_clients_threads PRIVATE seekdb_client GTest::gtest_main)
 gtest_discover_tests(test_two_clients_threads DISCOVERY_MODE PRE_TEST)
 

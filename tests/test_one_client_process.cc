@@ -41,8 +41,7 @@ protected:
         bin_path_ = bin;
         ASSERT_TRUE(fs::exists(bin_path_));
 
-        db_dir_ = "/tmp/seekdb_test_db";
-        fs::remove_all(db_dir_);
+        db_dir_ = make_per_test_db_dir(SEEKDB_TEST_DATA_ROOT);
         fs::create_directories(db_dir_);
     }
 
