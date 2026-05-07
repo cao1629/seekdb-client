@@ -59,7 +59,7 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
     if (a_pid == 0) {
         close(ready_a[0]);
         SeekdbHandle h = nullptr;
-        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h)
+        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2881, &h)
             != SEEKDB_SUCCESS) _exit(10);
         char byte = 'Y';
         if (write(ready_a[1], &byte, 1) != 1) _exit(13);
@@ -94,7 +94,7 @@ TEST_F(TwoClientsProcesses, KillTwoClientProcessesOneByOne)
 
         char byte = 'Y';
         SeekdbHandle h = nullptr;
-        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h)
+        if (seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2881, &h)
             != SEEKDB_SUCCESS) _exit(10);
         if (write(open_done[1], &byte, 1) != 1) _exit(13);
 
