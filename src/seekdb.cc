@@ -236,8 +236,12 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
         return SEEKDB_INTERNAL_ERROR;
     }
 
-    /* Cache the pid: wait_for_ready frees `spawned` on -1, so we can't
-     * deref it for the post-call tlog. */
+    /* Mirror the Process fields onto the handle. wait_for_ready frees
+     * `spawned` on -1, so deref before the call. */
+    h->spawned_pid = spawned->pid;
+#ifdef _WIN32
+    h->spawned_handle = spawned->handle;
+#endif
     const int64_t spawned_pid = spawned->pid;
     tlog("ready to call wait_for_ready(spawned pid = %lld)\n", (long long)spawned_pid);
     int rc = wait_for_ready(h, spawned);

@@ -145,7 +145,7 @@ target_link_libraries(test_two_clients_processes PRIVATE seekdb_client GTest::gt
 gtest_discover_tests(test_two_clients_processes DISCOVERY_MODE PRE_TEST)
 
 add_executable(test_two_clients_threads tests/test_two_clients_threads.cc)
-target_include_directories(test_two_clients_threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_two_clients_threads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${MARIADB_INCLUDE_DIRS})
 target_compile_definitions(test_two_clients_threads PRIVATE SEEKDB_TEST_DATA_ROOT="${SEEKDB_TEST_DATA_ROOT}")
 target_link_libraries(test_two_clients_threads PRIVATE seekdb_client GTest::gtest_main)
 gtest_discover_tests(test_two_clients_threads DISCOVERY_MODE PRE_TEST)

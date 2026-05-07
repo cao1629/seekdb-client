@@ -16,6 +16,7 @@
 
 #include "port.h"
 #include "seekdb.h"
+#include "seekdb_internal.h"
 #include "test_utils.h"
 
 #include <chrono>
@@ -25,6 +26,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -47,9 +49,9 @@ protected:
     }
 
     void TearDown() override {
-        int64_t pid = read_server_pid(db_dir_);
-        while (pid > 0 && !is_server_reaped(pid))
-            std::this_thread::sleep_for(200ms);
+        // Each test cleans up the daemons it spawned in its own body
+        // using the SeekdbHandleImpl::spawned_pid it captured. Nothing
+        // to do here.
     }
 };
 
@@ -65,12 +67,19 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     std::condition_variable cv;
     bool a_opened = false, b_opened = false;
     int a_open_rc = -1, b_open_rc = -1;
-
+    std::vector<int64_t> spawned_pids;
 
     auto run_client = [&](int &open_rc, bool &opened_flag) {
         SeekdbHandle h = nullptr;
         open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
         tlog("seekdb_open return %d\n", open_rc);
+
+        if (open_rc == SEEKDB_SUCCESS && h != nullptr) {
+            int64_t pid = ((SeekdbHandleImpl *)h)->spawned_pid;
+            std::lock_guard<std::mutex> lk(m);
+            spawned_pids.push_back(pid);
+            tlog("saved spawned pid = %lld\n", (long long)pid);
+        }
 
         { std::lock_guard<std::mutex> lk(m); opened_flag = true; }
         cv.notify_all();
@@ -97,15 +106,25 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
     ta.join();
     tb.join();
 
-    // Kill the spawned server so it doesn't linger into TearDown (or the
-    // next iteration when this test is run in a loop).
-    int64_t server_pid = read_server_pid(db_dir_);
-    tlog("read_server_pid = %lld\n", (long long)server_pid);
-    if (server_pid > 0 && !is_server_reaped(server_pid)) {
-        terminate_process(server_pid, /*graceful=*/0);
-        auto deadline = std::chrono::steady_clock::now() + 10s;
-        while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(200ms);
+    // Terminate every daemon either thread spawned, then loop until each
+    // is reaped. spawned_pids contains one entry per successful
+    // seekdb_open; entries equal to 0 took the fast path (no spawn) and
+    // are treated as already reaped.
+    for (int64_t pid : spawned_pids) {
+        if (pid > 0 && !is_server_reaped(pid)) {
+            terminate_process(pid, /*graceful=*/0);
+        }
+    }
+    while (true) {
+        bool all_reaped = true;
+        for (int64_t pid : spawned_pids) {
+            if (pid > 0 && !is_server_reaped(pid)) {
+                all_reaped = false;
+                break;
+            }
+        }
+        if (all_reaped) break;
+        std::this_thread::sleep_for(200ms);
     }
 }
 
@@ -162,7 +181,7 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ASSERT_EQ(a_open_rc, SEEKDB_SUCCESS);
     ASSERT_EQ(a_query_rc, SEEKDB_SUCCESS);
 
-    const int64_t server_pid = read_server_pid(db_dir_);
+    const int64_t server_pid = ((SeekdbHandleImpl *)h_a)->spawned_pid;
     ASSERT_GT(server_pid, 0);
     ASSERT_FALSE(is_server_reaped(server_pid));
 
@@ -176,13 +195,6 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     }
     ASSERT_EQ(b_open_rc, SEEKDB_SUCCESS);
     ASSERT_EQ(b_query_rc, SEEKDB_SUCCESS);
-
-    // Headline invariants: B didn't spawn anything.
-    // EXPECT_EQ(read_server_pid(db_dir_), server_pid)
-    //     << "seekdb.pid changed -- B unexpectedly spawned";
-    // EXPECT_FALSE(is_server_reaped(server_pid));
-
-    // EXPECT_TRUE(fs::exists(db_dir_ + "/run/sql.sock"));
 
     {
         std::lock_guard<std::mutex> lk(m);

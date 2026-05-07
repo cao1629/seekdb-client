@@ -16,6 +16,13 @@ typedef struct {
     Flock   *clients_lock;       /* SH-locked for the lifetime of the handle */
     char    host[64];            /* set to "127.0.0.1" when caller passes a non-zero port */
     int     port;                /* 0 ⇒ use sock_path (UDS); non-zero ⇒ use TCP host:port */
+    /* Mirrors of Process — populated after spawn_process succeeds, so the
+     * handle remembers which daemon it brought up (or was given by a
+     * previous owner). 0/NULL when the handle took the fast path. */
+    int64_t spawned_pid;
+#ifdef _WIN32
+    void   *spawned_handle;
+#endif
 } SeekdbHandleImpl;
 
 typedef struct {
