@@ -4,6 +4,7 @@
 #include "tlog.h"
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -224,6 +225,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     char base_dir_arg[512];
     snprintf(base_dir_arg, sizeof(base_dir_arg), "--base-dir=%s", db_dir);
     char *argv[] = {(char *)bin_path, base_dir_arg,
+                    (char *)"--port=2991",
                     (char *)"--embedded", (char *)"--nodaemon", NULL};
     if (spawn_process(bin_path, argv, &spawned) != OK) {
         flock_close(startup_lock);

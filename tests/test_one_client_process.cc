@@ -62,7 +62,7 @@ TEST_F(OneClientProcess, ClientClose)
     if (client_pid == 0) {
         close(ready[0]);
         SeekdbHandle h = nullptr;
-        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2881, &h);
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
         const char y = 'Y';
         write(ready[1], &y, 1);
         close(ready[1]);
@@ -94,7 +94,7 @@ TEST_F(OneClientProcess, ClientExit)
     if (client_pid == 0) {
         close(ready[0]);
         SeekdbHandle h = nullptr;
-        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2881, &h);
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
         const char y = 'Y';
         write(ready[1], &y, 1);
         close(ready[1]);
@@ -125,7 +125,7 @@ TEST_F(OneClientProcess, KillClient)
     if (client_pid == 0) {
         close(ready[0]);
         SeekdbHandle h = nullptr;
-        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2881, &h);
+        seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
         const char y = 'Y';
         write(ready[1], &y, 1);
         close(ready[1]);
