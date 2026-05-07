@@ -109,10 +109,14 @@ static int try_connect(SeekdbHandleImpl *h)
             tlog("try_connect: SELECT 1 failed: %s\n", mysql_error(m));
         }
     } else {
+        const unsigned int err = mysql_errno(m);
+        const char *msg = mysql_error(m);
         if (use_tcp) {
-            tlog("try_connect failed: db_dir=%s, host=%s:%d\n", h->db_dir, h->host, h->port);
+            tlog("try_connect failed: db_dir=%s, host=%s:%d, errno=%u: %s\n",
+                 h->db_dir, h->host, h->port, err, msg ? msg : "");
         } else {
-            tlog("try_connect failed: db_dir=%s, sock_path=%s\n", h->db_dir, h->sock_path);
+            tlog("try_connect failed: db_dir=%s, sock_path=%s, errno=%u: %s\n",
+                 h->db_dir, h->sock_path, err, msg ? msg : "");
         }
     }
     mysql_close(m);
