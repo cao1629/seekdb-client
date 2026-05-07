@@ -164,6 +164,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     }
 
     if (ensure_dir(db_dir) != OK) {
+        tlog("ensure_dir failed: %s\n", db_dir);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
@@ -172,18 +173,26 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     char run_dir[256];
     snprintf(run_dir, sizeof(run_dir), "%s/run", db_dir);
     if (ensure_dir(run_dir) != OK) {
+        tlog("ensure_dir failed: %s\n", run_dir);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
 
     if (flock_open(h->clients_lock_path, &h->clients_lock) != OK) {
+        tlog("flock_open failed: %s\n", h->clients_lock_path);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
 
-    flock_acquire(h->clients_lock, FLOCK_SHARED);
+    if (!flock_acquire(h->clients_lock, FLOCK_SHARED)) {
+        tlog("flock_acquire(seekdb.clients, SH) failed\n");
+        flock_close(h->clients_lock);
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
     tlog("got seekdb.clients\n");
 
     if (try_connect(h)) {
@@ -195,12 +204,20 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
     Flock *startup_lock = NULL;
     if (flock_open(h->startup_lock_path, &startup_lock) != OK) {
+        tlog("flock_open failed: %s\n", h->startup_lock_path);
         flock_close(h->clients_lock);
         xfree(h->db_dir);
         free(h);
         return SEEKDB_INTERNAL_ERROR;
     }
-    flock_acquire(startup_lock, FLOCK_EXCLUSIVE);
+    if (!flock_acquire(startup_lock, FLOCK_EXCLUSIVE)) {
+        tlog("flock_acquire(seekdb.startup, EX) failed\n");
+        flock_close(startup_lock);
+        flock_close(h->clients_lock);
+        xfree(h->db_dir);
+        free(h);
+        return SEEKDB_INTERNAL_ERROR;
+    }
     tlog("got startup lock\n");
 
     Process *spawned = NULL;
@@ -228,7 +245,7 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
 
 
     if (rc < 0) {
-        fprintf(stderr, "seekdb: server not ready\n");
+        tlog("seekdb: server not ready\n");
         flock_close(h->clients_lock);
         xfree(h->db_dir);
         free(h);

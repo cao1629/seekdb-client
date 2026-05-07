@@ -54,7 +54,9 @@ int flock_open(const char *path, Flock **out_flock)
     return OK;
 }
 
-/* Returns 1 if the lock was acquired, 0 otherwise. */
+/* Returns 1 if the lock was acquired, 0 otherwise. On a blocking call,
+ * logs the OS error if LockFileEx returned FALSE (try-acquire stays
+ * silent — failure there is the expected "couldn't get it" path). */
 static int do_lock(Flock *lock, FlockMode mode, int blocking)
 {
     DWORD flags = (mode == FLOCK_EXCLUSIVE) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
@@ -65,15 +67,28 @@ static int do_lock(Flock *lock, FlockMode mode, int blocking)
     if (!LockFileEx(lock->handle, flags, 0,
                     /* lock the entire file */
                     MAXDWORD, MAXDWORD,
-                    &ov))
+                    &ov)) {
+        if (blocking) {
+            DWORD err = GetLastError();
+            char errmsg[256];
+            DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM
+                                     | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     NULL, err, 0,
+                                     errmsg, sizeof(errmsg), NULL);
+            if (n == 0) errmsg[0] = '\0';
+            tlog("LockFileEx(mode=%s) failed: error %lu: %s\n",
+                 (mode == FLOCK_EXCLUSIVE) ? "EX" : "SH",
+                 (unsigned long)err, errmsg);
+        }
         return 0;
+    }
     lock->held = 1;
     return 1;
 }
 
-void flock_acquire(Flock *lock, FlockMode mode)
+int flock_acquire(Flock *lock, FlockMode mode)
 {
-    do_lock(lock, mode, /*blocking=*/1);
+    return do_lock(lock, mode, /*blocking=*/1);
 }
 
 
@@ -153,7 +168,6 @@ int spawn_process(const char *bin_path, char *const argv[], Process **out_proc)
     if (!cmd) return ERR;
 
     tlog("spawn_process: bin='%s'\n", bin_path);
-    tlog("spawn_process: cmdline=%s\n", cmd);
 
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -280,9 +294,15 @@ static int flock_op_for(FlockMode mode)
     return (mode == FLOCK_SHARED) ? LOCK_SH : LOCK_EX;
 }
 
-void flock_acquire(Flock *lock, FlockMode mode)
+int flock_acquire(Flock *lock, FlockMode mode)
 {
-    flock(lock->fd, flock_op_for(mode));
+    if (flock(lock->fd, flock_op_for(mode)) != 0) {
+        tlog("flock(mode=%s) failed: errno %d: %s\n",
+             (mode == FLOCK_EXCLUSIVE) ? "EX" : "SH",
+             errno, strerror(errno));
+        return 0;
+    }
+    return 1;
 }
 
 

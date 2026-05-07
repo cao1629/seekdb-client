@@ -44,8 +44,11 @@ int flock_open(const char *path, Flock **out_flock);
 
 /*
  * Acquire `mode` on the lock. Blocks until acquired.
+ * Returns 1 on success, 0 on failure (the underlying syscall — flock(2)
+ * on POSIX, LockFileEx on Win32 — refused or errored). On failure the
+ * implementation logs the OS error code via tlog.
  */
-void flock_acquire(Flock *lock, FlockMode mode);
+int flock_acquire(Flock *lock, FlockMode mode);
 
 /*
  * Same as flock_acquire but never blocks. Returns 1 if the lock was
