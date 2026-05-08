@@ -17,6 +17,14 @@
 #define WAIT_INTERVAL_US    (200 * 1000)   /* 200 ms between try_connect polls */
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
 
+/* When port == 0 the client picks the platform-native local transport:
+ * POSIX → Unix-domain socket at h->sock_path. Windows → named pipe at
+ * \\.\pipe\<SEEKDB_NAMED_PIPE>. Caller passes only the pipe suffix to
+ * libmariadb; the driver prepends \\.\pipe\ internally. */
+#ifdef _WIN32
+#define SEEKDB_NAMED_PIPE "MySQL"
+#endif
+
 /* Set of spawned servers this process has not yet reaped.
  * A single client process may open multiple seekdb instances (distinct
  * db-dirs), each spawning its own server/ */
@@ -89,13 +97,28 @@ static int try_connect(SeekdbHandleImpl *h)
     mysql_options(m, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
 
     const bool use_tcp = h->port != 0;
+#ifdef _WIN32
+    if (!use_tcp) {
+        mysql_options(m, MYSQL_OPT_NAMED_PIPE, NULL);
+    }
+#endif
     if (mysql_real_connect(m,
-                           use_tcp ? h->host : NULL,
+                           use_tcp ? h->host :
+#ifdef _WIN32
+                           ".",
+#else
+                           NULL,
+#endif
                            "root@sys",
                            "",
                            NULL,
                            use_tcp ? (unsigned int)h->port : 0,
-                           use_tcp ? NULL : h->sock_path,
+                           use_tcp ? NULL :
+#ifdef _WIN32
+                           SEEKDB_NAMED_PIPE,
+#else
+                           h->sock_path,
+#endif
                            0)) {
         if (mysql_real_query(m, "SELECT 1", 8) == 0) {
             MYSQL_RES *r = mysql_store_result(m);
@@ -115,8 +138,13 @@ static int try_connect(SeekdbHandleImpl *h)
             tlog("try_connect failed: db_dir=%s, host=%s:%d, errno=%u: %s\n",
                  h->db_dir, h->host, h->port, err, msg ? msg : "");
         } else {
+#ifdef _WIN32
+            tlog("try_connect failed: db_dir=%s, pipe=\\\\.\\pipe\\%s, errno=%u: %s\n",
+                 h->db_dir, SEEKDB_NAMED_PIPE, err, msg ? msg : "");
+#else
             tlog("try_connect failed: db_dir=%s, sock_path=%s, errno=%u: %s\n",
                  h->db_dir, h->sock_path, err, msg ? msg : "");
+#endif
         }
     }
     mysql_close(m);
@@ -304,8 +332,13 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
         tlog("seekdb_connect: tcp=%s:%d db=%s autocommit=%d\n",
              h->host, h->port, database ? database : "(null)", (int)autocommit);
     } else {
+#ifdef _WIN32
+        tlog("seekdb_connect: pipe=\\\\.\\pipe\\%s db=%s autocommit=%d\n",
+             SEEKDB_NAMED_PIPE, database ? database : "(null)", (int)autocommit);
+#else
         tlog("seekdb_connect: sock=%s db=%s autocommit=%d\n",
              h->sock_path, database ? database : "(null)", (int)autocommit);
+#endif
     }
 
     SeekdbConnectionImpl *c = (SeekdbConnectionImpl *)calloc(1, sizeof(*c));
@@ -320,22 +353,42 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
         mysql_options(c->mysql, MYSQL_OPT_SSL_ENFORCE,            &no_ssl);
         mysql_options(c->mysql, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &no_ssl);
     }
+#ifdef _WIN32
+    if (!use_tcp) {
+        mysql_options(c->mysql, MYSQL_OPT_NAMED_PIPE, NULL);
+    }
+#endif
 
     if (!mysql_real_connect(c->mysql,
-                            use_tcp ? h->host : NULL,
+                            use_tcp ? h->host :
+#ifdef _WIN32
+                            ".",
+#else
+                            NULL,
+#endif
                             "root",
                             "",
                             database,
                             use_tcp ? (unsigned int)h->port : 0,
-                            use_tcp ? NULL : h->sock_path,
+                            use_tcp ? NULL :
+#ifdef _WIN32
+                            SEEKDB_NAMED_PIPE,
+#else
+                            h->sock_path,
+#endif
                             0))
     {
         if (use_tcp) {
             fprintf(stderr, "seekdb: connect(%s:%d) failed: %s\n",
                     h->host, h->port, mysql_error(c->mysql));
         } else {
+#ifdef _WIN32
+            fprintf(stderr, "seekdb: connect(\\\\.\\pipe\\%s) failed: %s\n",
+                    SEEKDB_NAMED_PIPE, mysql_error(c->mysql));
+#else
             fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
                     h->sock_path, mysql_error(c->mysql));
+#endif
         }
         mysql_close(c->mysql);
         free(c);
