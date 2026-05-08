@@ -18,12 +18,11 @@
 #define REAPER_INTERVAL_US  (500 * 1000)   /* 500 ms between reaper wakeups */
 
 /* When port == 0 the client picks the platform-native local transport:
- * POSIX → Unix-domain socket at h->sock_path. Windows → named pipe at
- * \\.\pipe\<SEEKDB_NAMED_PIPE>. Caller passes only the pipe suffix to
- * libmariadb; the driver prepends \\.\pipe\ internally. */
-#ifdef _WIN32
-#define SEEKDB_NAMED_PIPE "MySQL"
-#endif
+ * POSIX → Unix-domain socket at h->sock_path. Windows → named pipe whose
+ * suffix the server writes to <db_dir>/run/sql.pipe (per-instance:
+ * <pid>-<timestamp>). The client reads that file lazily on first
+ * try_connect once the server has started. libmariadb prepends \\.\pipe\
+ * internally so we only ever pass the suffix. */
 
 /* Set of spawned servers this process has not yet reaped.
  * A single client process may open multiple seekdb instances (distinct
@@ -86,6 +85,25 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 
 /* ============================================================ handle ===== */
 
+#ifdef _WIN32
+/* Read the pipe-name suffix from <db_dir>/run/sql.pipe into h->pipe_name.
+ * Returns 1 on success; 0 if the file is missing/empty (caller should retry). */
+static int read_pipe_name(SeekdbHandleImpl *h)
+{
+    FILE *fp = fopen(h->pipe_file_path, "r");
+    if (!fp) return 0;
+    char buf[256] = {0};
+    char *r = fgets(buf, sizeof(buf), fp);
+    fclose(fp);
+    if (!r) return 0;
+    size_t n = std::strlen(buf);
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
+    if (n == 0) return 0;
+    snprintf(h->pipe_name, sizeof(h->pipe_name), "%s", buf);
+    return 1;
+}
+#endif
+
 static int try_connect(SeekdbHandleImpl *h)
 {
 
@@ -99,6 +117,11 @@ static int try_connect(SeekdbHandleImpl *h)
     const bool use_tcp = h->port != 0;
 #ifdef _WIN32
     if (!use_tcp) {
+        if (h->pipe_name[0] == '\0' && !read_pipe_name(h)) {
+            tlog("try_connect: %s not readable yet\n", h->pipe_file_path);
+            mysql_close(m);
+            return 0;
+        }
         mysql_options(m, MYSQL_OPT_NAMED_PIPE, NULL);
     }
 #endif
@@ -115,7 +138,7 @@ static int try_connect(SeekdbHandleImpl *h)
                            use_tcp ? (unsigned int)h->port : 0,
                            use_tcp ? NULL :
 #ifdef _WIN32
-                           SEEKDB_NAMED_PIPE,
+                           h->pipe_name,
 #else
                            h->sock_path,
 #endif
@@ -140,7 +163,7 @@ static int try_connect(SeekdbHandleImpl *h)
         } else {
 #ifdef _WIN32
             tlog("try_connect failed: db_dir=%s, pipe=\\\\.\\pipe\\%s, errno=%u: %s\n",
-                 h->db_dir, SEEKDB_NAMED_PIPE, err, msg ? msg : "");
+                 h->db_dir, h->pipe_name, err, msg ? msg : "");
 #else
             tlog("try_connect failed: db_dir=%s, sock_path=%s, errno=%u: %s\n",
                  h->db_dir, h->sock_path, err, msg ? msg : "");
@@ -190,6 +213,9 @@ int seekdb_open(const char *bin_path, const char *db_dir, int port,
     snprintf(h->sock_path,          sizeof(h->sock_path),          "%s/run/sql.sock",        db_dir);
     snprintf(h->clients_lock_path,  sizeof(h->clients_lock_path),  "%s/run/seekdb.clients",  db_dir);
     snprintf(h->startup_lock_path,  sizeof(h->startup_lock_path),  "%s/run/seekdb.startup",  db_dir);
+#ifdef _WIN32
+    snprintf(h->pipe_file_path,     sizeof(h->pipe_file_path),     "%s/run/sql.pipe",        db_dir);
+#endif
 
     if (port != 0) {
         snprintf(h->host, sizeof(h->host), "127.0.0.1");
@@ -334,7 +360,7 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
     } else {
 #ifdef _WIN32
         tlog("seekdb_connect: pipe=\\\\.\\pipe\\%s db=%s autocommit=%d\n",
-             SEEKDB_NAMED_PIPE, database ? database : "(null)", (int)autocommit);
+             h->pipe_name, database ? database : "(null)", (int)autocommit);
 #else
         tlog("seekdb_connect: sock=%s db=%s autocommit=%d\n",
              h->sock_path, database ? database : "(null)", (int)autocommit);
@@ -372,7 +398,7 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
                             use_tcp ? (unsigned int)h->port : 0,
                             use_tcp ? NULL :
 #ifdef _WIN32
-                            SEEKDB_NAMED_PIPE,
+                            h->pipe_name,
 #else
                             h->sock_path,
 #endif
@@ -384,7 +410,7 @@ int seekdb_connect(SeekdbHandle handle, const char *database, bool autocommit,
         } else {
 #ifdef _WIN32
             fprintf(stderr, "seekdb: connect(\\\\.\\pipe\\%s) failed: %s\n",
-                    SEEKDB_NAMED_PIPE, mysql_error(c->mysql));
+                    h->pipe_name, mysql_error(c->mysql));
 #else
             fprintf(stderr, "seekdb: connect(%s) failed: %s\n",
                     h->sock_path, mysql_error(c->mysql));
