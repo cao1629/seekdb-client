@@ -183,7 +183,7 @@ int main(int argc, char **argv)
     const char *db_dir   = argv[2];
 
     SeekdbHandle handle = NULL;
-    if (seekdb_open(bin_path, db_dir, 2991, &handle) != SEEKDB_SUCCESS) {
+    if (seekdb_open(bin_path, db_dir, 0, &handle) != SEEKDB_SUCCESS) {
         fprintf(stderr, "seekdb_open failed\n");
         return 1;
     }
