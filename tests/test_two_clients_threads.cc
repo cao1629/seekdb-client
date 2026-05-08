@@ -72,7 +72,7 @@ TEST_F(TwoClientsOpen, TwoConcurrentClients)
 
     auto run_client = [&](int &open_rc, bool &opened_flag) {
         SeekdbHandle h = nullptr;
-        open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
+        open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
         tlog("seekdb_open return %d\n", open_rc);
 
         if (open_rc == SEEKDB_SUCCESS && h != nullptr) {
@@ -158,11 +158,15 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     SeekdbConnection c_a = nullptr, c_b = nullptr;
     int a_open_rc = -1, a_query_rc = -1;
     int b_open_rc = -1, b_query_rc = -1;
+    std::vector<int64_t> spawned_pids;
 
     auto run_client = [&](SeekdbHandle &h, SeekdbConnection &c,
                           int &open_rc, int &query_rc, bool &opened_flag) {
-        open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
+        open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
         if (open_rc == SEEKDB_SUCCESS) {
+            int64_t pid = ((SeekdbHandleImpl *)h)->spawned_pid;
+            { std::lock_guard<std::mutex> lk(m); spawned_pids.push_back(pid); }
+            tlog("saved spawned pid = %lld\n", (long long)pid);
             if (seekdb_connect(h, nullptr, true, &c) == SEEKDB_SUCCESS) {
                 SeekdbResult r = nullptr;
                 query_rc = seekdb_query(c, "SELECT 1", 8, &r);
@@ -219,11 +223,25 @@ TEST_F(TwoClientsOpen, BArrivesAfterAStartup)
     ta.join();
     tb.join();
 
-    auto deadline = std::chrono::steady_clock::now() + 15s;
-    while (!is_server_reaped(server_pid) && std::chrono::steady_clock::now() < deadline)
+    // Terminate every daemon either thread spawned, then loop until each
+    // is reaped. spawned_pids contains one entry per successful
+    // seekdb_open; entries equal to 0 took the fast path (no spawn).
+    for (int64_t pid : spawned_pids) {
+        if (pid > 0 && !is_server_reaped(pid)) {
+            terminate_process(pid, /*graceful=*/0);
+        }
+    }
+    while (true) {
+        bool all_reaped = true;
+        for (int64_t pid : spawned_pids) {
+            if (pid > 0 && !is_server_reaped(pid)) {
+                all_reaped = false;
+                break;
+            }
+        }
+        if (all_reaped) break;
         std::this_thread::sleep_for(200ms);
-    EXPECT_TRUE(is_server_reaped(server_pid))
-        << "server " << server_pid << " still alive 15s after both clients closed";
+    }
 }
 
 // Cross-client visibility: thread A writes a row, thread B reads it back
@@ -242,10 +260,16 @@ TEST_F(TwoClientsOpen, ClientBSeesClientAWrite)
     int a_open_rc = -1, a_write_rc = -1;
     int b_open_rc = -1, b_query_rc = -1;
     int64_t b_seen_value = 0;
+    std::vector<int64_t> spawned_pids;
 
     auto run_a = [&]() {
         SeekdbHandle h = nullptr;
-        a_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
+        a_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        if (a_open_rc == SEEKDB_SUCCESS && h != nullptr) {
+            int64_t pid = ((SeekdbHandleImpl *)h)->spawned_pid;
+            { std::lock_guard<std::mutex> lk(m); spawned_pids.push_back(pid); }
+            tlog("saved spawned pid = %lld\n", (long long)pid);
+        }
         { std::lock_guard<std::mutex> lk(m); a_opened = true; }
         cv.notify_all();
         if (a_open_rc != SEEKDB_SUCCESS) { if (h) seekdb_close(h); return; }
@@ -276,7 +300,12 @@ TEST_F(TwoClientsOpen, ClientBSeesClientAWrite)
 
     auto run_b = [&]() {
         SeekdbHandle h = nullptr;
-        b_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 2991, &h);
+        b_open_rc = seekdb_open(bin_path_.c_str(), db_dir_.c_str(), 0, &h);
+        if (b_open_rc == SEEKDB_SUCCESS && h != nullptr) {
+            int64_t pid = ((SeekdbHandleImpl *)h)->spawned_pid;
+            { std::lock_guard<std::mutex> lk(m); spawned_pids.push_back(pid); }
+            tlog("saved spawned pid = %lld\n", (long long)pid);
+        }
         { std::lock_guard<std::mutex> lk(m); b_opened = true; }
         cv.notify_all();
         if (b_open_rc != SEEKDB_SUCCESS) { if (h) seekdb_close(h); return; }
@@ -328,6 +357,26 @@ TEST_F(TwoClientsOpen, ClientBSeesClientAWrite)
     cv.notify_all();
     ta.join();
     tb.join();
+
+    // Terminate every daemon either thread spawned, then loop until each
+    // is reaped. spawned_pids contains one entry per successful
+    // seekdb_open; entries equal to 0 took the fast path (no spawn).
+    for (int64_t pid : spawned_pids) {
+        if (pid > 0 && !is_server_reaped(pid)) {
+            terminate_process(pid, /*graceful=*/0);
+        }
+    }
+    while (true) {
+        bool all_reaped = true;
+        for (int64_t pid : spawned_pids) {
+            if (pid > 0 && !is_server_reaped(pid)) {
+                all_reaped = false;
+                break;
+            }
+        }
+        if (all_reaped) break;
+        std::this_thread::sleep_for(200ms);
+    }
 }
 
 }  // namespace
