@@ -91,15 +91,25 @@ void  seekdb_free(void *ptr)     { xfree(ptr); }
 static int read_pipe_name(SeekdbHandleImpl *h)
 {
     FILE *fp = fopen(h->pipe_file_path, "r");
-    if (!fp) return 0;
+    if (!fp) {
+        tlog("read_pipe_name: fopen(%s) failed: errno=%d\n", h->pipe_file_path, errno);
+        return 0;
+    }
     char buf[256] = {0};
     char *r = fgets(buf, sizeof(buf), fp);
     fclose(fp);
-    if (!r) return 0;
+    if (!r) {
+        tlog("read_pipe_name: fgets(%s) returned NULL (empty file?)\n", h->pipe_file_path);
+        return 0;
+    }
     size_t n = std::strlen(buf);
     while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
-    if (n == 0) return 0;
+    if (n == 0) {
+        tlog("read_pipe_name: %s contained only whitespace\n", h->pipe_file_path);
+        return 0;
+    }
     snprintf(h->pipe_name, sizeof(h->pipe_name), "%s", buf);
+    tlog("read_pipe_name: %s -> \\\\.\\pipe\\%s\n", h->pipe_file_path, h->pipe_name);
     return 1;
 }
 #endif
