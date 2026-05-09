@@ -127,10 +127,19 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 add_subdirectory(deps/googletest EXCLUDE_FROM_ALL)
 include(GoogleTest)
 
-# Per-test data dirs live under <build>/test_data/<test-name>, given to
-# each test as a SEEKDB_TEST_DATA_ROOT compile-time string. Tests append
-# their own subdir name so different fixtures don't trample each other.
-set(SEEKDB_TEST_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/test_data")
+# Per-test data dirs live under SEEKDB_TEST_DATA_ROOT, given to each
+# test as a compile-time string. Tests append their own subdir name so
+# different fixtures don't trample each other.
+#
+# On POSIX we use /tmp/seekdb_tests because the build tree path is
+# typically too long for AF_UNIX's sun_path[108] limit (the Unix socket
+# at <db_dir>/run/sql.sock blows past 108 chars otherwise). Windows
+# uses named pipes which have no such limit, so the build tree is fine.
+if(WIN32)
+    set(SEEKDB_TEST_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/test_data")
+else()
+    set(SEEKDB_TEST_DATA_ROOT "/tmp/seekdb_tests")
+endif()
 
 add_executable(test_one_client_process tests/test_one_client_process.cc)
 target_include_directories(test_one_client_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
