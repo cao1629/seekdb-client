@@ -1,0 +1,14 @@
+# Build artifacts
+build/
+compile_commands.json
+*.so
+*.o
+*.pyc
+__pycache__/
+
+# Editor / IDE / tooling caches
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
