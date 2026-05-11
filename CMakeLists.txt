@@ -84,7 +84,7 @@ set(MARIADB_LIBRARY mariadbclient)   # CMake target from the submodule
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-add_library(seekdb_client
+add_library(seekdb_client SHARED
             src/seekdb.cc
             src/port.cc)
 
